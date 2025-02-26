@@ -22,7 +22,7 @@ from typing import List, Union, Dict, Any
 
 
 class Tracking(object):
-    supported_backend = ["wandb", "mlflow", "swanlab", "vemlp_wandb", "console"]
+    supported_backend = ["wandb", "mlflow", "swanlab", "vemlp_wandb", "console", "local_json"]
 
     def __init__(self, project_name, experiment_name, default_backend: Union[str, List[str]] = 'console', config=None):
         if isinstance(default_backend, str):
@@ -35,6 +35,27 @@ class Tracking(object):
                 assert backend in self.supported_backend, f'{backend} is not supported'
 
         self.logger = {}
+        self.config = config
+
+        # Save the config to the experiment directory if requested
+        if config and config.get('trainer', {}).get('save_config', False):
+            import os
+            import json
+            from omegaconf import OmegaConf
+            
+            local_dir = config.get('trainer', {}).get('default_local_dir', 'checkpoints')
+            os.makedirs(local_dir, exist_ok=True)
+            
+            config_path = os.path.join(local_dir, 'config.json')
+            with open(config_path, 'w') as f:
+                # Check if config is an OmegaConf object
+                if hasattr(OmegaConf, 'is_config') and OmegaConf.is_config(config):
+                    json_config = OmegaConf.to_container(config, resolve=True)
+                else:
+                    # If it's a regular dict, use it directly
+                    json_config = config
+                json.dump(json_config, f, indent=2)
+            print(f"Saved configuration to {config_path}")
 
         if 'tracking' in default_backend or 'wandb' in default_backend:
             import wandb
@@ -85,6 +106,12 @@ class Tracking(object):
             from verl.utils.logger.aggregate_logger import LocalLogger
             self.console_logger = LocalLogger(print_to_console=True)
             self.logger['console'] = self.console_logger
+            
+        if 'local_json' in default_backend:
+            from verl.utils.logger.json_logger import JSONLogger
+            local_dir = config.get('trainer', {}).get('default_local_dir', 'checkpoints')
+            self.json_logger = JSONLogger(log_dir=local_dir)
+            self.logger['local_json'] = self.json_logger
 
     def log(self, data, step, backend=None):
         for default_backend, logger_instance in self.logger.items():

@@ -161,3 +161,4 @@ trainer:
   critic_warmup: 0
   default_hdfs_dir: null
   default_local_dir: checkpoints/${trainer.project_name}/${trainer.experiment_name}
+  save_config: False  # Whether to save the config to the checkpoint directory

@@ -877,7 +877,8 @@ class RayPPOTrainer(object):
 
                 # pop those keys for generation
                 gen_batch = batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
-
+                metrics['step'] = self.global_steps
+                metrics['epoch'] = epoch+1         # we start from epoch 1
                 with _timer('step', timing_raw):
                     # generate a batch
                     with _timer('gen', timing_raw):
