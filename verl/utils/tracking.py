@@ -42,7 +42,6 @@ class Tracking(object):
             import os
             import json
             from omegaconf import OmegaConf
-            
             local_dir = config.get('trainer', {}).get('default_local_dir', 'checkpoints')
             os.makedirs(local_dir, exist_ok=True)
             
@@ -59,7 +58,31 @@ class Tracking(object):
 
         if 'tracking' in default_backend or 'wandb' in default_backend:
             import wandb
-            wandb.init(project=project_name, name=experiment_name, config=config)
+            # Convert config to a JSON-serializable format before passing to wandb
+            try:
+                import json
+                from omegaconf import OmegaConf
+                
+                if config is not None:
+                    if hasattr(OmegaConf, 'is_config') and OmegaConf.is_config(config):
+                        wandb_config = OmegaConf.to_container(config, resolve=True)
+                    else:
+                        # Try to convert to a simple dict if possible
+                        try:
+                            # First try to serialize to JSON and back to ensure it's JSON-compatible
+                            wandb_config = json.loads(json.dumps(config))
+                        except (TypeError, json.JSONDecodeError):
+                            # If that fails, create a simplified version with just basic types
+                            wandb_config = {"simplified_config": "Config object could not be fully serialized"}
+                else:
+                    wandb_config = None
+                    
+                wandb.init(project=project_name, name=experiment_name, config=wandb_config)
+            except Exception as e:
+                import warnings
+                warnings.warn(f"Failed to initialize wandb with full config: {str(e)}. Initializing with minimal config.")
+                wandb.init(project=project_name, name=experiment_name)
+            
             self.logger['wandb'] = wandb
 
         if 'mlflow' in default_backend:

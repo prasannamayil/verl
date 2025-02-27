@@ -37,6 +37,45 @@ verl is fast with:
 - [2024/10] verl is presented at Ray Summit. [Youtube video](https://www.youtube.com/watch?v=MrhMcXkXvJU&list=PLzTswPQNepXntmT8jr9WaNfqQ60QwW7-U&index=37) available.
 - [2024/08] HybridFlow (verl) is accepted to EuroSys 2025.
 
+## PM Updates
+### General
+- flash-attention installation is an issue, just module load cuda/12.4 and then reinstall flash-attention.
+- to run grpo, simply do `bash examples/grpo_trainer/run_qwen2-0.5b.sh`.
+
+### JSONL logging
+We've added a new feature to log data in JSONL format. This allows researchers to analyze the data in a more flexible and scalable way.
+
+**Key features:**
+- Log data in JSONL format
+- Save data to local_dir/logs/
+
+**Usage:**
+Add the following parameters to your training configuration file or command line:
+
+```yaml
+trainer:
+  logger: ["local_json"]
+  +trainer.save_config=True # Save the config to local_dir/config.yaml
+```
+### Advantage Tracking for RLHF Analysis
+We've added a new feature to track advantages across entire datasets during training. This allows researchers to analyze how advantage estimates evolve throughout training for both training and validation datasets.
+
+**Key features:**
+- Track advantages before training begins and at configurable epoch intervals
+- Save comprehensive data including sample IDs, prompts, responses, and token-level advantages
+- Analyze advantage distributions across the entire dataset
+
+**Usage:**
+Add the following parameters to your training configuration file or command line:
+
+```yaml
+trainer:
+  +trainer.track_advantages=True
+  +trainer.track_advantages_freq=1
+  +trainer.track_advantages_path="/path/to/save/advantages" # Save location, otherwise defaulted to local_dir/advantages/
+```
+
+`verl/utils/advantage_analysis.py` can be used to analyze the advantage data.
 ## Key Features
 
 - **FSDP** and **Megatron-LM** for training.

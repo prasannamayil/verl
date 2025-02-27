@@ -448,7 +448,8 @@ class FSDPSFTTrainer(object):
         if rank == 0:
             tracking = Tracking(project_name=self.config.trainer.project_name,
                                 experiment_name=self.config.trainer.experiment_name,
-                                default_backend=self.config.trainer.logger)
+                                default_backend=self.config.trainer.logger,
+                                config=self.config)
 
         global_step = 0
         # compute the total training steps.
