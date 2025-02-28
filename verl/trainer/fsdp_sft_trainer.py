@@ -475,6 +475,9 @@ class FSDPSFTTrainer(object):
                     tracking.log(data=metric, step=global_step)
                 global_step += 1
 
+                if global_step % self.config.trainer.save_checkpoint_steps == 0:
+                    self.save_checkpoint(step=global_step)
+
                 # for early exit validation
                 if global_step >= self.total_training_steps:
                     # Perform final validation
