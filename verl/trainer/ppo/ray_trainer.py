@@ -37,6 +37,11 @@ from verl.trainer.ppo import core_algos
 from verl.utils.seqlen_balancing import get_seqlen_balanced_partitions, log_seqlen_unbalance
 from verl.utils.checkpoint.checkpoint_manager import find_latest_ckpt_path
 from verl.utils.dataset.rl_dataset import RLHFDataset, collate_fn
+import os
+import torch
+import numpy as np
+from collections import defaultdict
+from tqdm import tqdm
 
 WorkerType = Type[Worker]
 
@@ -257,6 +262,8 @@ def compute_data_metrics(batch, use_critic=True):
             torch.max(sequence_score).detach().item(),
         'critic/score/min':
             torch.min(sequence_score).detach().item(),
+        'critic/score/var':
+            torch.var(sequence_score).detach().item(),
         # reward
         'critic/rewards/mean':
             torch.mean(sequence_reward).detach().item(),
@@ -264,6 +271,8 @@ def compute_data_metrics(batch, use_critic=True):
             torch.max(sequence_reward).detach().item(),
         'critic/rewards/min':
             torch.min(sequence_reward).detach().item(),
+        'critic/rewards/var':
+            torch.var(sequence_reward).detach().item(),
         # adv
         'critic/advantages/mean':
             torch.mean(valid_adv).detach().item(),
@@ -271,6 +280,8 @@ def compute_data_metrics(batch, use_critic=True):
             torch.max(valid_adv).detach().item(),
         'critic/advantages/min':
             torch.min(valid_adv).detach().item(),
+        'critic/advantages/var':
+            torch.var(valid_adv).detach().item(),
         # returns
         'critic/returns/mean':
             torch.mean(valid_returns).detach().item(),
@@ -278,6 +289,8 @@ def compute_data_metrics(batch, use_critic=True):
             torch.max(valid_returns).detach().item(),
         'critic/returns/min':
             torch.min(valid_returns).detach().item(),
+        'critic/returns/var':
+            torch.var(valid_returns).detach().item(),
         **({
             # values
             'critic/values/mean': torch.mean(valid_values).detach().item(),
@@ -290,6 +303,8 @@ def compute_data_metrics(batch, use_critic=True):
         # response length
         'response_length/mean':
             torch.mean(response_length).detach().item(),
+        'response_length/var':
+            torch.var(response_length).detach().item(),
         'response_length/max':
             torch.max(response_length).detach().item(),
         'response_length/min':
@@ -398,6 +413,16 @@ class RayPPOTrainer(object):
             self.use_critic = False
         else:
             raise NotImplementedError
+
+        # Initialize advantage tracking storage
+        self.advantage_tracking_enabled = getattr(self.config.trainer, 'track_advantages', False)
+        if self.advantage_tracking_enabled:
+            self.advantage_tracking_freq = getattr(self.config.trainer, 'track_advantages_freq', 1)  # Default: every epoch
+            self.advantage_tracking_path = getattr(self.config.trainer, 'track_advantages_path', 
+                                                  os.path.join(self.config.trainer.default_local_dir, 'advantage_tracking'))
+            
+            # Create the directory if it doesn't exist
+            os.makedirs(self.advantage_tracking_path, exist_ok=True)
 
         self._validate_config()
         self._create_dataloader()
@@ -837,6 +862,145 @@ class RayPPOTrainer(object):
                                                     prefix=logging_prefix)
         metrics.update(global_balance_stats)
 
+    def _compute_and_save_dataset_advantages(self, epoch, dataset_type='train'):
+        """Compute and save advantages for the entire dataset.
+        
+        Args:
+            epoch: Current epoch number (-1 means before training)
+            dataset_type: 'train' or 'val'
+        """
+        # TODO: this probably doesnt work for PPO or the likes. Need to uncomment few lines below to potentially fix (also need to change scores, etc).
+        if not self.advantage_tracking_enabled:
+            return
+        
+        print(f"Computing advantages for entire {dataset_type} dataset (epoch {epoch})...")
+        
+        # Choose the appropriate dataloader
+        dataloader = self.train_dataloader if dataset_type == 'train' else self.val_dataloader
+        
+        # Storage for all advantages
+        all_advantages = defaultdict(list)
+        
+        # Get world size for batch size adjustment
+        world_size = self.actor_rollout_wg.world_size
+        
+        # Disable gradient computation for efficiency
+        with torch.no_grad():
+            for batch_idx, batch_dict in enumerate(tqdm(dataloader, desc=f"Computing {dataset_type} advantages")):
+                # Convert to DataProto
+                batch = DataProto.from_single_dict(batch_dict)
+                
+                # Skip empty batches
+                if len(batch.batch) == 0:
+                    continue
+                
+                # Ensure batch size is divisible by world_size by truncating extra samples
+                batch_size = len(batch.batch)
+                if batch_size % world_size != 0:
+                    # Calculate how many samples to keep (truncate the rest)
+                    keep_size = (batch_size // world_size) * world_size
+                    
+                    # Use the reorder method to keep only the first keep_size samples
+                    indices = torch.arange(keep_size)
+                    batch.reorder(indices)
+                    
+                    print(f"Truncated batch from {batch_size} to {keep_size} samples to ensure divisibility by {world_size}")
+                
+                # Add unique IDs if not present
+                if 'uid' not in batch.non_tensor_batch:
+                    batch.non_tensor_batch['uid'] = np.array([f"{dataset_type}_{batch_idx}_{i}" 
+                                                             for i in range(len(batch.batch))], dtype=object)
+                
+                # Generate responses using the current policy
+                gen_batch = batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
+                gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
+                
+                # Repeat to align with repeated responses in rollout (if needed)
+                batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
+                batch = batch.union(gen_batch_output)
+                
+                # Compute rewards
+                if self.use_rm:
+                    reward_tensor = self.rm_wg.compute_rm_score(batch)
+                    batch = batch.union(reward_tensor)
+                
+                reward_tensor = self.reward_fn(batch)
+                batch.batch['token_level_scores'] = reward_tensor
+                
+                # Apply KL penalty if needed
+                if not self.config.actor_rollout_ref.actor.get('use_kl_loss', False) and self.use_reference_policy:
+                    batch, _ = apply_kl_penalty(batch,
+                                              kl_ctrl=self.kl_ctrl,
+                                              kl_penalty=self.config.algorithm.kl_penalty)
+                else:
+                    batch.batch['token_level_rewards'] = batch.batch['token_level_scores']
+                
+                # Compute advantages
+                batch = compute_advantage(batch,
+                                        adv_estimator=self.config.algorithm.adv_estimator,
+                                        gamma=self.config.algorithm.gamma,
+                                        lam=self.config.algorithm.lam,
+                                        num_repeat=1)
+                
+                # Extract and store the data
+                advantages = batch.batch['advantages'].detach().cpu()
+                sample_ids = batch.non_tensor_batch['uid']
+                input_ids = batch.batch['input_ids'].detach().cpu()
+                response_ids = batch.batch['responses'].detach().cpu()
+                
+                # get token level scores (this also might change for something that is not grpo)
+                if dataset_type == 'train':
+                    batch.batch['token_level_rewards'] = self.reward_fn(batch)
+                else:
+                    batch.batch['token_level_rewards'] = self.val_reward_fn(batch)
+                token_level_rewards = batch.batch['token_level_rewards'].detach().cpu()
+
+                # not computing this for now
+                # attention_mask = batch.batch['attention_mask'].detach().cpu()
+                # response_length = response_ids.size(1)
+
+    
+                #response_mask = attention_mask[:, -response_length:]
+                #token_rewards = batch.batch['token_level_rewards'].detach().cpu() if 'token_level_rewards' in batch.batch else None
+                
+                # Store data for each sample
+                for i in range(len(sample_ids)):
+                    sample_id = sample_ids[i]
+                    
+                    # Decode text for better analysis
+                    prompt_text = self.tokenizer.decode(input_ids[i], skip_special_tokens=True)
+                    response_text = self.tokenizer.decode(response_ids[i], skip_special_tokens=True)
+                    
+                    all_advantages[sample_id].append({
+                        'prompt': prompt_text,
+                        'response': response_text,
+                        'advantage': advantages[i].numpy()[0],
+                        'score': token_level_rewards[i].numpy().sum()
+                    })
+
+                    # computing entire response mask and token rewards and advantage is unnecessary and only useful if we have token level / process level rewards
+                    # all_advantages[sample_id].append({
+                    #     'prompt': prompt_text,
+                    #     'response': response_text,
+                    #     'advantage': advantages[i].numpy(),
+                    #     'response_mask': response_mask[i].numpy(),
+                    #     'token_reward': token_rewards[i].numpy() if token_rewards is not None else None
+                    # })
+        
+        # Save the collected advantages
+        epoch_label = "pre_training" if epoch == -1 else f"epoch_{epoch}"
+        filename = f'advantages_{dataset_type}_{epoch_label}.pt'
+        filepath = os.path.join(self.advantage_tracking_path, filename)
+        
+        advantage_data = {
+            'epoch': epoch,
+            'dataset_type': dataset_type,
+            'samples': dict(all_advantages)
+        }
+        
+        torch.save(advantage_data, filepath)
+        print(f"Saved {dataset_type} advantage data to {filepath}")
+
     def fit(self):
         """
         The training loop of PPO.
@@ -868,6 +1032,11 @@ class RayPPOTrainer(object):
         # we start from step 1
         self.global_steps += 1
 
+        # Compute advantages before any training
+        if self.advantage_tracking_enabled:
+            self._compute_and_save_dataset_advantages(epoch=-1, dataset_type='val')
+            self._compute_and_save_dataset_advantages(epoch=-1, dataset_type='train')
+        
         for epoch in range(self.config.trainer.total_epochs):
             for batch_dict in self.train_dataloader:
                 metrics = {}
@@ -955,10 +1124,10 @@ class RayPPOTrainer(object):
 
                         # compute advantages, executed on the driver process
                         batch = compute_advantage(batch,
-                                                  adv_estimator=self.config.algorithm.adv_estimator,
-                                                  gamma=self.config.algorithm.gamma,
-                                                  lam=self.config.algorithm.lam,
-                                                  num_repeat=self.config.actor_rollout_ref.rollout.n)
+                                              adv_estimator=self.config.algorithm.adv_estimator,
+                                              gamma=self.config.algorithm.gamma,
+                                              lam=self.config.algorithm.lam,
+                                              num_repeat=self.config.actor_rollout_ref.rollout.n)
 
                     # update critic
                     if self.use_critic:
@@ -995,6 +1164,14 @@ class RayPPOTrainer(object):
                 logger.log(data=metrics, step=self.global_steps)
 
                 self.global_steps += 1
+
+                # Compute advantages at the end of the epoch if needed
+                if self.advantage_tracking_enabled and (
+                    epoch == self.config.trainer.total_epochs - 1 or  # Last epoch
+                    self.advantage_tracking_freq > 0 and (epoch + 1) % self.advantage_tracking_freq == 0  # By frequency
+                ):
+                    self._compute_and_save_dataset_advantages(epoch=epoch, dataset_type='train')
+                    self._compute_and_save_dataset_advantages(epoch=epoch, dataset_type='val')
 
                 if self.global_steps >= self.total_training_steps:
 

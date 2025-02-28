@@ -38,6 +38,8 @@ python3 -m verl.trainer.main_ppo \
     trainer.nnodes=1 \
     trainer.save_freq=1 \
     trainer.test_freq=1 \
-    trainer.total_epochs=1 \
+    trainer.total_epochs=3 \
     trainer.default_local_dir=$checkpoint_dir \
+    trainer.track_advantages=True \
+    trainer.track_advantages_freq=1 \
     +trainer.save_config=True $@
