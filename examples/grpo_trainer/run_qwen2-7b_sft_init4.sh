@@ -2,8 +2,8 @@ set -x
 
 export VLLM_ATTENTION_BACKEND=XFORMERS
 
-path_to_sft_checkpoint=/fast/pmayilvahanan/post_training/verl_checkpoints/qwen2-7b_sft_gsm8k_epochs_2/global_step_24
-experiment_name=qwen2-7b_function_rm_sft_init_gsm8k_steps_24    
+path_to_sft_checkpoint=/fast/pmayilvahanan/post_training/verl_checkpoints/qwen2-7b_sft_gsm8k_epochs_2/global_step_48
+experiment_name=qwen2-7b_function_rm_sft_init_gsm8k_steps_48    
 checkpoint_dir=/fast/pmayilvahanan/post_training/verl_checkpoints/$experiment_name
 
 python3 -m verl.trainer.main_ppo \
