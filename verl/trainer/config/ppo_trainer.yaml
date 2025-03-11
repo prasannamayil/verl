@@ -86,6 +86,7 @@ actor_rollout_ref:
     do_sample: True
     # number of responses (i.e. num sample times)
     n: 1 # > 1 for grpo
+    n_advantage_tracking: None # this is the size of group for advantage tracking
 
 critic:
   strategy: fsdp
@@ -171,3 +172,6 @@ trainer:
   remove_previous_ckpt_in_save: False
   del_local_ckpt_after_load: False
   default_local_dir: checkpoints/${trainer.project_name}/${trainer.experiment_name}
+  save_config: False  # Whether to save the config to the checkpoint directory
+  track_advantages: False
+  track_advantages_freq: 6

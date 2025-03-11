@@ -417,7 +417,7 @@ class RayPPOTrainer(object):
         # Initialize advantage tracking storage
         self.advantage_tracking_enabled = getattr(self.config.trainer, 'track_advantages', False)
         if self.advantage_tracking_enabled:
-            self.advantage_tracking_freq = getattr(self.config.trainer, 'track_advantages_freq', 1)  # Default: every epoch
+            self.advantage_tracking_freq = getattr(self.config.trainer, 'track_advantages_freq', 1)  # Default: every step
             self.advantage_tracking_path = getattr(self.config.trainer, 'track_advantages_path', 
                                                   os.path.join(self.config.trainer.default_local_dir, 'advantage_tracking'))
             
@@ -511,10 +511,14 @@ class RayPPOTrainer(object):
 
         print("[validate_config] All configuration checks passed successfully!")
 
-    def _create_dataloader(self):
+    def _create_dataloader(self, set_to_self=True, shuffle=None, batch_size=None):
         from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
+
+        shuffle = shuffle if shuffle is not None else self.config.data.shuffle
+        batch_size = batch_size if batch_size is not None else self.config.data.train_batch_size
         # TODO: we have to make sure the batch size is divisible by the dp size
-        self.train_dataset = RLHFDataset(parquet_files=self.config.data.train_files,
+        # TODO: lot of garbage collectible objects
+        train_dataset = RLHFDataset(parquet_files=self.config.data.train_files,
                                          tokenizer=self.tokenizer,
                                          prompt_key=self.config.data.prompt_key,
                                          max_prompt_length=self.config.data.max_prompt_length,
@@ -522,43 +526,45 @@ class RayPPOTrainer(object):
                                          return_raw_chat=self.config.data.get('return_raw_chat', False),
                                          truncation='error')
         # use sampler for better ckpt resume
-        if self.config.data.shuffle:
+        if shuffle:
             train_dataloader_generator = torch.Generator()
             train_dataloader_generator.manual_seed(self.config.data.get('seed', 1))
-            sampler = RandomSampler(data_source=self.train_dataset, generator=train_dataloader_generator)
+            sampler = RandomSampler(data_source=train_dataset, generator=train_dataloader_generator)
         else:
-            sampler = SequentialSampler(data_source=self.train_dataset)
+            sampler = SequentialSampler(data_source=train_dataset)
 
-        self.train_dataloader = DataLoader(dataset=self.train_dataset,
-                                           batch_size=self.config.data.train_batch_size,
-                                           drop_last=True,
-                                           collate_fn=collate_fn,
-                                           sampler=sampler)
+        train_dataloader = DataLoader(dataset=train_dataset,
+                                            batch_size=batch_size,
+                                            drop_last=True,
+                                            collate_fn=collate_fn,
+                                            sampler=sampler)
+            
 
-        self.val_dataset = RLHFDataset(parquet_files=self.config.data.val_files,
+        val_dataset = RLHFDataset(parquet_files=self.config.data.val_files,
                                        tokenizer=self.tokenizer,
                                        prompt_key=self.config.data.prompt_key,
                                        max_prompt_length=self.config.data.max_prompt_length,
                                        filter_prompts=True,
                                        return_raw_chat=self.config.data.get('return_raw_chat', False),
                                        truncation='error')
-        self.val_dataloader = DataLoader(
-            dataset=self.val_dataset,
+        
+        val_dataloader = DataLoader(
+            dataset=val_dataset,
             # Validation datasets are sent to inference engines as a whole batch,
             # which will schedule the memory themselves.
-            batch_size=len(self.val_dataset),
+            batch_size=len(val_dataset),
             shuffle=True,
             drop_last=False,
             collate_fn=collate_fn)
 
-        assert len(self.train_dataloader) >= 1
-        assert len(self.val_dataloader) >= 1
+        assert len(train_dataloader) >= 1
+        assert len(val_dataloader) >= 1
 
-        print(f'Size of train dataloader: {len(self.train_dataloader)}')
-        print(f'Size of val dataloader: {len(self.val_dataloader)}')
+        print(f'Size of train dataloader: {len(train_dataloader)}')
+        print(f'Size of val dataloader: {len(val_dataloader)}')
 
         # inject total_training_steps to actor/critic optim_config. This is hacky.
-        total_training_steps = len(self.train_dataloader) * self.config.trainer.total_epochs
+        total_training_steps = len(train_dataloader) * self.config.trainer.total_epochs
 
         if self.config.trainer.total_training_steps is not None:
             total_training_steps = self.config.trainer.total_training_steps
@@ -570,6 +576,14 @@ class RayPPOTrainer(object):
         with open_dict(self.config):
             self.config.actor_rollout_ref.actor.optim.total_training_steps = total_training_steps
             self.config.critic.optim.total_training_steps = total_training_steps
+
+        if set_to_self:
+            self.train_dataset = train_dataset
+            self.val_dataset = val_dataset
+            self.train_dataloader = train_dataloader
+            self.val_dataloader = val_dataloader
+        else:
+            return train_dataloader, val_dataloader
 
     def _maybe_log_val_generations_to_wandb(self, inputs, outputs, scores):
         """Log a table of validation samples to wandb"""
@@ -862,21 +876,28 @@ class RayPPOTrainer(object):
                                                     prefix=logging_prefix)
         metrics.update(global_balance_stats)
 
-    def _compute_and_save_dataset_advantages(self, epoch, dataset_type='train'):
+    def _compute_and_save_dataset_advantages(self, step, dataset_type='train'):
         """Compute and save advantages for the entire dataset.
         
         Args:
-            epoch: Current epoch number (-1 means before training)
+            step: Current step number (-1 means before training)
             dataset_type: 'train' or 'val'
         """
         # TODO: this probably doesnt work for PPO or the likes. Need to uncomment few lines below to potentially fix (also need to change scores, etc).
         if not self.advantage_tracking_enabled:
             return
         
-        print(f"Computing advantages for entire {dataset_type} dataset (epoch {epoch})...")
+        print(f"Computing advantages for entire {dataset_type} dataset (step {step})...")
+
+        # important args for advantage tracking
+        n_rollouts = self.config.actor_rollout_ref.rollout.n if self.config.actor_rollout_ref.rollout.n_advantage_tracking is None else self.config.actor_rollout_ref.rollout.n_advantage_tracking
+        shuffle = False
+        batch_size = self.config.data.train_batch_size // (n_rollouts // self.config.actor_rollout_ref.rollout.n)
         
-        # Choose the appropriate dataloader
-        dataloader = self.train_dataloader if dataset_type == 'train' else self.val_dataloader
+        # TODO creating dataloader again is inefficient. But doing it anyway because I want advantage computation for same samples. 
+        # Create and choose the appropriate dataloader
+        train_dataloader, val_dataloader = self._create_dataloader(set_to_self=False, shuffle=shuffle, batch_size=batch_size)
+        dataloader = train_dataloader if dataset_type == 'train' else val_dataloader
         
         # Storage for all advantages
         all_advantages = defaultdict(list)
@@ -906,18 +927,30 @@ class RayPPOTrainer(object):
                     
                     print(f"Truncated batch from {batch_size} to {keep_size} samples to ensure divisibility by {world_size}")
                 
-                # Add unique IDs if not present
-                if 'uid' not in batch.non_tensor_batch:
-                    batch.non_tensor_batch['uid'] = np.array([f"{dataset_type}_{batch_idx}_{i}" 
+                # apparently this is needed for the advantage computation
+
+                batch.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))],
+                                                            dtype=object)
+                # Add unique indices are not present
+                if 'index' not in batch.non_tensor_batch:
+                    batch.non_tensor_batch['index'] = np.array([f"{dataset_type}_{batch_idx}_{i}" 
                                                              for i in range(len(batch.batch))], dtype=object)
                 
                 # Generate responses using the current policy
                 gen_batch = batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
-                gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
-                
-                # Repeat to align with repeated responses in rollout (if needed)
-                batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
-                batch = batch.union(gen_batch_output)
+                if n_rollouts // self.config.actor_rollout_ref.rollout.n > 1:
+                    #TODO: This works but it's super ugly. Better to recreate a actor with larger n and load checkpoint
+                    gen_batch_output = []
+                    for i in range(n_rollouts // self.config.actor_rollout_ref.rollout.n):
+                        gen_batch_output.append(self.actor_rollout_wg.generate_sequences(gen_batch))
+                    gen_batch_output = DataProto.concat(gen_batch_output)
+
+                    batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
+                    batch = batch.repeat(repeat_times=n_rollouts // self.config.actor_rollout_ref.rollout.n, interleave=False)
+                    batch = batch.union(gen_batch_output)
+                else:
+                    gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
+                    batch = batch.repeat(repeat_times=n_rollouts, interleave=True)
                 
                 # Compute rewards
                 if self.use_rm:
@@ -944,10 +977,9 @@ class RayPPOTrainer(object):
                 
                 # Extract and store the data
                 advantages = batch.batch['advantages'].detach().cpu()
-                sample_ids = batch.non_tensor_batch['uid']
+                sample_ids = batch.non_tensor_batch['index']
                 input_ids = batch.batch['input_ids'].detach().cpu()
                 response_ids = batch.batch['responses'].detach().cpu()
-                
                 # get token level scores (this also might change for something that is not grpo)
                 if dataset_type == 'train':
                     batch.batch['token_level_rewards'] = self.reward_fn(batch)
@@ -988,12 +1020,12 @@ class RayPPOTrainer(object):
                     # })
         
         # Save the collected advantages
-        epoch_label = "pre_training" if epoch == -1 else f"epoch_{epoch}"
-        filename = f'advantages_{dataset_type}_{epoch_label}.pt'
+        step_label = "pre_training" if step == -1 else f"step_{step}"
+        filename = f'advantages_{dataset_type}_{step_label}.pt'
         filepath = os.path.join(self.advantage_tracking_path, filename)
         
         advantage_data = {
-            'epoch': epoch,
+            'step': step,
             'dataset_type': dataset_type,
             'samples': dict(all_advantages)
         }
@@ -1034,8 +1066,8 @@ class RayPPOTrainer(object):
 
         # Compute advantages before any training
         if self.advantage_tracking_enabled:
-            self._compute_and_save_dataset_advantages(epoch=-1, dataset_type='val')
-            self._compute_and_save_dataset_advantages(epoch=-1, dataset_type='train')
+            self._compute_and_save_dataset_advantages(step=-1, dataset_type='val')
+            self._compute_and_save_dataset_advantages(step=-1, dataset_type='train')
         
         for epoch in range(self.config.trainer.total_epochs):
             for batch_dict in self.train_dataloader:
@@ -1168,10 +1200,10 @@ class RayPPOTrainer(object):
                 # Compute advantages at the end of the epoch if needed
                 if self.advantage_tracking_enabled and (
                     epoch == self.config.trainer.total_epochs - 1 or  # Last epoch
-                    self.advantage_tracking_freq > 0 and (epoch + 1) % self.advantage_tracking_freq == 0  # By frequency
+                    self.advantage_tracking_freq > 0 and (self.global_steps % self.advantage_tracking_freq == 0)  # By frequency
                 ):
-                    self._compute_and_save_dataset_advantages(epoch=epoch, dataset_type='train')
-                    self._compute_and_save_dataset_advantages(epoch=epoch, dataset_type='val')
+                    self._compute_and_save_dataset_advantages(step=self.global_steps, dataset_type='train')
+                    self._compute_and_save_dataset_advantages(step=self.global_steps, dataset_type='val')
 
                 if self.global_steps >= self.total_training_steps:
 
