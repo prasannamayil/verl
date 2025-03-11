@@ -464,6 +464,18 @@ class FSDPSFTTrainer(object):
 
         # TODO (zhangchi.usc1992) add back checkpoint manager. Currently, it blocks when uploading to hdfs. So very slow.
 
+        # validation at step 0
+        val_losses = []
+        for data in self.val_dataloader:
+            data = TensorDict(data, batch_size=self.config.data.micro_batch_size_per_gpu).cuda()
+            val_loss = self.validation_step(data)
+            val_losses.append(val_loss)
+        if rank == 0:
+            val_loss = torch.mean(torch.stack(val_losses))
+            metric = {'val/loss': val_loss.detach().item()}
+            tracking.log(data=metric, step=global_step)
+        torch.distributed.barrier()
+
         for epoch in range(self.config.trainer.total_epochs):
             self.train_sampler.set_epoch(epoch=epoch)
             for data in tqdm(self.train_dataloader,
@@ -496,17 +508,18 @@ class FSDPSFTTrainer(object):
                     self.save_checkpoint(step=global_step)
                     return
 
-            # validation
-            val_losses = []
-            for data in self.val_dataloader:
-                data = TensorDict(data, batch_size=self.config.data.micro_batch_size_per_gpu).cuda()
-                val_loss = self.validation_step(data)
-                val_losses.append(val_loss)
-            if rank == 0:
-                val_loss = torch.mean(torch.stack(val_losses))
-                metric = {'val/loss': val_loss.detach().item()}
-                tracking.log(data=metric, step=global_step)
-            torch.distributed.barrier()
+                if global_step % self.config.trainer.save_checkpoint_steps == 0:
+                    # validation
+                    val_losses = []
+                    for data in self.val_dataloader:
+                        data = TensorDict(data, batch_size=self.config.data.micro_batch_size_per_gpu).cuda()
+                        val_loss = self.validation_step(data)
+                        val_losses.append(val_loss)
+                    if rank == 0:
+                        val_loss = torch.mean(torch.stack(val_losses))
+                        metric = {'val/loss': val_loss.detach().item()}
+                        tracking.log(data=metric, step=global_step)
+                    torch.distributed.barrier()
 
             # save checkpoint
             self.save_checkpoint(step=global_step)
