@@ -2,7 +2,10 @@ set -x
 
 export VLLM_ATTENTION_BACKEND=XFORMERS
 
-experiment_name=llama3.2-1b_grpo_gsm8k
+dir_name=qwen2-1.5b_sft_v0.1.7_gsm8k_epochs_3_lr_1e-6
+step=6
+path_to_sft_checkpoint=/fast/pmayilvahanan/post_training/verl_checkpoints/$dir_name/global_step_$step
+experiment_name=${dir_name}_step_${step}_grpo
 checkpoint_dir=/fast/pmayilvahanan/post_training/verl_checkpoints/$experiment_name
 
 python3 -m verl.trainer.main_ppo \
@@ -12,7 +15,7 @@ python3 -m verl.trainer.main_ppo \
     data.train_batch_size=1024 \
     data.max_prompt_length=512 \
     data.max_response_length=1024 \
-    actor_rollout_ref.model.path=meta-llama/Llama-3.2-1B-Instruct \
+    actor_rollout_ref.model.path=$path_to_sft_checkpoint \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.ppo_mini_batch_size=256 \

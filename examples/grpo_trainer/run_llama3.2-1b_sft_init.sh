@@ -2,8 +2,10 @@ set -x
 
 export VLLM_ATTENTION_BACKEND=XFORMERS
 
-path_to_sft_checkpoint=/fast/pmayilvahanan/post_training/verl_checkpoints/llama3.2-1b_sft/global_step_29
-experiment_name=llama3.2-1b_function_rm_sft_init_gsm8k_epoch_1
+dir_name=llama3.2-1b_sft_gsm8k_epochs_3_lr_1e-6
+step=6
+path_to_sft_checkpoint=/fast/pmayilvahanan/post_training/verl_checkpoints/$dir_name/global_step_$step
+experiment_name=${dir_name}_step_${step}_grpo
 checkpoint_dir=/fast/pmayilvahanan/post_training/verl_checkpoints/$experiment_name
 
 python3 -m verl.trainer.main_ppo \
@@ -29,6 +31,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
     actor_rollout_ref.rollout.n=5 \
+    actor_rollout_ref.rollout.n_advantage_tracking=15 \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=160 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     algorithm.kl_ctrl.kl_coef=0.001 \
@@ -40,8 +43,8 @@ python3 -m verl.trainer.main_ppo \
     trainer.nnodes=1 \
     trainer.save_freq=1 \
     trainer.test_freq=1 \
-    trainer.total_epochs=5 \
+    trainer.total_epochs=3 \
     trainer.default_local_dir=$checkpoint_dir \
-    +trainer.track_advantages=True \
-    +trainer.track_advantages_freq=1 \
-    +trainer.save_config=True $@
+    trainer.track_advantages=True \
+    trainer.track_advantages_freq=3 \
+    trainer.save_config=True $@ 
