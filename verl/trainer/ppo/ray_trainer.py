@@ -416,16 +416,19 @@ class RayPPOTrainer(object):
 
         # Initialize advantage tracking storage
         self.advantage_tracking_enabled = getattr(self.config.trainer, 'track_advantages', False)
+        self.advantage_tracking_path = getattr(self.config.trainer, 'track_advantages_path', 
+                                                os.path.join(self.config.trainer.default_local_dir, 'advantage_tracking'))
+        os.makedirs(self.advantage_tracking_path, exist_ok=True)
+
+
         if self.advantage_tracking_enabled:
             self.advantage_tracking_freq = getattr(self.config.trainer, 'track_advantages_freq', 1)  # Default: every step
-            self.advantage_tracking_path = getattr(self.config.trainer, 'track_advantages_path', 
-                                                  os.path.join(self.config.trainer.default_local_dir, 'advantage_tracking'))
             
             # Create the directory if it doesn't exist
-            os.makedirs(self.advantage_tracking_path, exist_ok=True)
 
         self._validate_config()
         self._create_dataloader()
+
 
     def _validate_config(self):
         config = self.config
@@ -511,8 +514,8 @@ class RayPPOTrainer(object):
 
         print("[validate_config] All configuration checks passed successfully!")
 
-    def _create_dataloader(self, set_to_self=True, shuffle=None, batch_size=None):
-        from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
+    def _create_dataloader(self, set_to_self=True, shuffle=None, batch_size=None, prioritized_sampling=False):
+        from torch.utils.data import DataLoader, RandomSampler, SequentialSampler, WeightedRandomSampler
 
         shuffle = shuffle if shuffle is not None else self.config.data.shuffle
         batch_size = batch_size if batch_size is not None else self.config.data.train_batch_size
@@ -526,12 +529,21 @@ class RayPPOTrainer(object):
                                          return_raw_chat=self.config.data.get('return_raw_chat', False),
                                          truncation='error')
         # use sampler for better ckpt resume
-        if shuffle:
-            train_dataloader_generator = torch.Generator()
-            train_dataloader_generator.manual_seed(self.config.data.get('seed', 1))
-            sampler = RandomSampler(data_source=train_dataset, generator=train_dataloader_generator)
+        if not prioritized_sampling:
+            if shuffle:
+                train_dataloader_generator = torch.Generator()
+                train_dataloader_generator.manual_seed(self.config.data.get('seed', 1))
+                sampler = RandomSampler(data_source=train_dataset, generator=train_dataloader_generator)
+            else:
+                sampler = SequentialSampler(data_source=train_dataset)
         else:
-            sampler = SequentialSampler(data_source=train_dataset)
+            #train_dataloader_generator = torch.Generator()
+            #train_dataloader_generator.manual_seed(self.config.data.get('seed', 1))
+                #sampler = WeightedRandomSampler(weights=self.sampler_weights, num_samples=len(self.sampler_weights), generator=train_dataloader_generator, replacement=True)
+            sampler = WeightedRandomSampler(weights=self.sampler_weights, num_samples=len(self.sampler_weights), replacement=True)
+            print(f"no. of unique samples: {len(set(sampler))}")
+            unique_indices = sorted(list(set(sampler)))
+            torch.save(unique_indices, os.path.join(self.advantage_tracking_path, f'unique_indices_{self.global_steps}.pt'))
 
         train_dataloader = DataLoader(dataset=train_dataset,
                                             batch_size=batch_size,
@@ -876,16 +888,17 @@ class RayPPOTrainer(object):
                                                     prefix=logging_prefix)
         metrics.update(global_balance_stats)
 
-    def _compute_and_save_dataset_advantages(self, step, dataset_type='train'):
-        """Compute and save advantages for the entire dataset.
+    def _compute_and_save_dataset_advantages(self, step, dataset_type='train', prioritization_type=None):
+        """Compute and save advantages for the entire dataset. This function is also used  to compute advantage variance for sampler weights
         
         Args:
             step: Current step number (-1 means before training)
             dataset_type: 'train' or 'val'
+            save: Whether to save the advantages
+        
+        Returns (optional): advantage variance for sampler weights
         """
         # TODO: this probably doesnt work for PPO or the likes. Need to uncomment few lines below to potentially fix (also need to change scores, etc).
-        if not self.advantage_tracking_enabled:
-            return
         
         print(f"Computing advantages for entire {dataset_type} dataset (step {step})...")
 
@@ -938,7 +951,7 @@ class RayPPOTrainer(object):
                 
                 # Generate responses using the current policy
                 gen_batch = batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
-                if n_rollouts // self.config.actor_rollout_ref.rollout.n > 1:
+                if n_rollouts // self.config.actor_rollout_ref.rollout.n > 1 and prioritization_type is None: # we need this only for saving and not for sampler weights
                     #TODO: This works but it's super ugly. Better to recreate a actor with larger n and load checkpoint
                     gen_batch_output = []
                     for i in range(n_rollouts // self.config.actor_rollout_ref.rollout.n):
@@ -951,7 +964,8 @@ class RayPPOTrainer(object):
                 else:
                     gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
                     batch = batch.repeat(repeat_times=n_rollouts, interleave=True)
-                
+                    batch = batch.union(gen_batch_output)
+              
                 # Compute rewards
                 if self.use_rm:
                     reward_tensor = self.rm_wg.compute_rm_score(batch)
@@ -1018,20 +1032,47 @@ class RayPPOTrainer(object):
                     #     'response_mask': response_mask[i].numpy(),
                     #     'token_reward': token_rewards[i].numpy() if token_rewards is not None else None
                     # })
-        
-        # Save the collected advantages
+                    # Save the collected advantages
         step_label = "pre_training" if step == -1 else f"step_{step}"
         filename = f'advantages_{dataset_type}_{step_label}.pt'
         filepath = os.path.join(self.advantage_tracking_path, filename)
-        
         advantage_data = {
-            'step': step,
-            'dataset_type': dataset_type,
-            'samples': dict(all_advantages)
-        }
-        
-        torch.save(advantage_data, filepath)
-        print(f"Saved {dataset_type} advantage data to {filepath}")
+                'step': step,
+                'dataset_type': dataset_type,
+                'samples': dict(all_advantages)
+            }
+            
+        if prioritization_type is None:
+            torch.save(advantage_data, filepath)
+            print(f"Saved {dataset_type} advantage data to {filepath}")
+        elif prioritization_type == 'variance':
+            # #TODO: this is fugly but it samples all non zero variance groups equally likely
+            print(f"We are prioritizing based on variance \n")
+
+            advantage_variances = []
+            for sample_id in sorted(list(all_advantages.keys())):
+                # Extract all advantage values
+                advantage_values = [entry['advantage'] for entry in all_advantages[sample_id]]
+                var_value = float(np.var(advantage_values))
+                advantage_variances.append(var_value)
+            
+            advantage_data['advantage_variances'] = advantage_variances
+            
+            torch.save(advantage_data, filepath)
+            print(f"Saved {dataset_type} advantage data to {filepath}")
+
+            return advantage_variances
+        else:
+            raise ValueError(f"Invalid prioritization type: {prioritization_type}")
+    
+    def _compute_sampler_weights(self, advantage_variances):
+        """Compute sampler weights from advantage variances"""
+        # Normalize advantage variances to get probabilities
+        advantage_variances = np.array(advantage_variances)
+        advantage_variances = advantage_variances ** self.config.data.prioritized_sampling.alpha
+        sampler_weights = advantage_variances / np.sum(advantage_variances)
+        return sampler_weights
+    
 
     def fit(self):
         """
@@ -1064,12 +1105,33 @@ class RayPPOTrainer(object):
         # we start from step 1
         self.global_steps += 1
 
+        # steps per epoch
+        steps_per_epoch = self.total_training_steps // self.config.trainer.total_epochs
+
         # Compute advantages before any training
         if self.advantage_tracking_enabled:
             self._compute_and_save_dataset_advantages(step=-1, dataset_type='val')
             self._compute_and_save_dataset_advantages(step=-1, dataset_type='train')
+
         
-        for epoch in range(self.config.trainer.total_epochs):
+        # prioritization at step 1
+        if self.config.data.prioritized_sampling.enable:
+            advantage_variances = self._compute_and_save_dataset_advantages(step=self.global_steps, dataset_type='train', prioritization_type=self.config.data.prioritized_sampling.type)
+            print(f"advantage variances: {advantage_variances}")
+            self.sampler_weights = self._compute_sampler_weights(advantage_variances)
+            print(f"step {self.global_steps},  prioritization begins, sampler weights: {self.sampler_weights}")
+            self._create_dataloader(set_to_self=True, prioritized_sampling=True)
+
+        previous_global_steps = self.global_steps
+
+        while self.global_steps < self.total_training_steps:
+            epoch = self.global_steps // steps_per_epoch
+            
+
+            if self.config.data.prioritized_sampling.enable:
+                print(f"Data loader recreated at step {self.global_steps}")
+
+
             for batch_dict in self.train_dataloader:
                 metrics = {}
                 timing_raw = {}
@@ -1188,6 +1250,7 @@ class RayPPOTrainer(object):
                         with _timer('save_checkpoint', timing_raw):
                             self._save_checkpoint()
 
+
                 # collect metrics
                 metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
                 metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
@@ -1195,7 +1258,6 @@ class RayPPOTrainer(object):
                 # TODO: make a canonical logger that supports various backend
                 logger.log(data=metrics, step=self.global_steps)
 
-                self.global_steps += 1
 
                 # Compute advantages at the end of the epoch if needed
                 if self.advantage_tracking_enabled and (
@@ -1217,3 +1279,25 @@ class RayPPOTrainer(object):
                         with _timer('save_checkpoint', timing_raw):
                             self._save_checkpoint()
                     return
+                
+                # prioritization of samples
+                if self.config.data.prioritized_sampling.enable and (self.global_steps % self.config.data.prioritized_sampling.freq == 0):
+                    # for degugging. This should have previous steps index
+                    index = batch.non_tensor_batch['index']
+                    torch.save(index, os.path.join(self.advantage_tracking_path, f'index_batch_{previous_global_steps}.pt'))
+
+                    # This is all next step related prioritzation
+                    advantage_variances = self._compute_and_save_dataset_advantages(step=self.global_steps, dataset_type='train', prioritization_type=self.config.data.prioritized_sampling.type)
+                    self.sampler_weights = self._compute_sampler_weights(advantage_variances)
+                    print(f"step {self.global_steps}, epoch {epoch+1}, prioritization begins")
+                    self._create_dataloader(set_to_self=True, prioritized_sampling=True)
+
+                    previous_global_steps = self.global_steps
+                    self.global_steps += 1
+
+
+                    print(f"prioritzation, breaking and restarting with new loader")
+                    break
+
+                self.global_steps += 1
+
