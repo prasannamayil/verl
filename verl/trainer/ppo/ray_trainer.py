@@ -65,6 +65,7 @@ class AdvantageEstimator(str, Enum):
     """
     GAE = 'gae'
     GRPO = 'grpo'
+    GROUP_REINFORCE = 'group_reinforce'
     REINFORCE_PLUS_PLUS = 'reinforce_plus_plus'
     REMAX = 'remax'
     RLOO = 'rloo'
@@ -161,6 +162,14 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
                                                                         index=index)
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
+    elif adv_estimator == AdvantageEstimator.GROUP_REINFORCE:
+        token_level_rewards = data.batch['token_level_rewards']
+        responses = data.batch['responses']
+        response_length = responses.size(-1)
+        attention_mask = data.batch['attention_mask']
+        response_mask = attention_mask[:, -response_length:]
+        advantages, returns = core_algos.compute_group_reinforce_outcome_advantage(token_level_rewards=token_level_rewards,
+                                                                                  eos_mask=response_mask)
     elif adv_estimator == AdvantageEstimator.REINFORCE_PLUS_PLUS:
         token_level_rewards = data.batch['token_level_rewards']
         responses = data.batch['responses']
@@ -407,7 +416,7 @@ class RayPPOTrainer(object):
         if self.config.algorithm.adv_estimator == AdvantageEstimator.GAE:
             self.use_critic = True
         elif self.config.algorithm.adv_estimator in [
-                AdvantageEstimator.GRPO, AdvantageEstimator.REINFORCE_PLUS_PLUS, AdvantageEstimator.REMAX,
+                AdvantageEstimator.GRPO, AdvantageEstimator.GROUP_REINFORCE, AdvantageEstimator.REINFORCE_PLUS_PLUS, AdvantageEstimator.REMAX,
                 AdvantageEstimator.RLOO
         ]:
             self.use_critic = False
