@@ -1234,7 +1234,7 @@ class RayPPOTrainer(object):
 
         previous_global_steps = self.global_steps
         total_seen_samples = 0
-        
+
         while self.global_steps < self.total_training_steps:
             epoch = self.global_steps // steps_per_epoch
             
@@ -1342,7 +1342,7 @@ class RayPPOTrainer(object):
                     if self.config.trainer.only_positive_advantages:
                         with torch.no_grad():
                             batch, positive_advantages_metrics = self.filter_positive_advantages(batch)
-                    metrics.update(positive_advantages_metrics)
+                        metrics.update(positive_advantages_metrics)
 
                     print(f"batch.batch['advantages'] shape: {batch.batch['advantages'].shape}")
                     print(f"batch.batch['advantages'] values: {batch.batch['advantages']}")
