@@ -180,3 +180,4 @@ trainer:
   save_config: False  # Whether to save the config to the checkpoint directory
   track_advantages: False
   track_advantages_freq: 6
+  only_positive_advantages: False

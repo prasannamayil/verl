@@ -425,6 +425,8 @@ class ActorRolloutRefWorker(Worker):
             delta_time = timer.last
             global_num_tokens = data.meta_info['global_token_num']
             estimated_flops, promised_flops = self.flops_counter.estimate_flops(global_num_tokens, delta_time)
+
+            metrics['estimated_flops'] = estimated_flops
             metrics['mfu/actor'] = estimated_flops * self.config.actor.ppo_epochs / promised_flops / self.world_size
 
             self.actor_lr_scheduler.step()

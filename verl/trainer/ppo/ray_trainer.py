@@ -1110,6 +1110,79 @@ class RayPPOTrainer(object):
         sampler_weights = advantage_variances / np.sum(advantage_variances)
         return sampler_weights
     
+    def filter_positive_advantages(self, batch: DataProto) -> DataProto:
+        """
+        Filter a batch to keep only rows with positive advantages.
+        Ensures resulting batch size is divisible by world_size for distributed training.
+        
+        Args:
+            batch: DataProto containing the batch with computed advantages
+            
+        Returns:
+            Tuple of (DataProto containing only rows with positive advantages, metrics dict)
+        """
+        # Extract advantages
+        advantages = batch.batch['advantages']  # shape: [batch_size * rollout, max_response_length]
+        responses = batch.batch['responses']
+        response_length = responses.size(-1)
+        attention_mask = batch.batch['attention_mask']
+        response_mask = attention_mask[:, -response_length:]
+        
+        # For most algorithms, advantages have the same value for all valid tokens in each response
+        # So we can check just the first token's advantage for each sample
+        # And mask it with response_mask to ignore padding tokens
+        
+        # Get the first valid token advantage for each sample
+        first_valid_adv = advantages.clone()
+        first_valid_adv[~response_mask] = float('-inf')  # Set padding positions to -inf
+        
+        # For each row, get maximum advantage value (will be the first valid token's advantage)
+        row_max_adv, _ = first_valid_adv.max(dim=1)  # [batch_size * rollout]
+        
+        # Create a mask for rows with positive advantages
+        positive_adv_mask = row_max_adv > 0  # [batch_size * rollout]
+        
+        # Get indices where advantages are positive
+        positive_indices = torch.nonzero(positive_adv_mask).squeeze(-1)
+        
+        # Check if we have any positive advantages
+        positive_count = len(positive_indices)
+        if positive_count == 0:
+            print("Warning: No positive advantages found in batch. Returning original batch.")
+            return batch, {'positive_advantages_ratio': 0.0}
+        
+        # Ensure the number of positive samples is divisible by world_size
+        world_size = self.actor_rollout_wg.world_size
+        if positive_count % world_size != 0:
+            # Calculate how many samples to keep (must be divisible by world_size)
+            keep_count = (positive_count // world_size) * world_size
+            if keep_count == 0:
+                print("Warning: Not enough positive advantages to create a batch divisible by world_size. Returning original batch.")
+                return batch, {'positive_advantages_ratio': 0.0}
+            
+            # Truncate indices to ensure divisibility
+            positive_indices = positive_indices[:keep_count]
+            positive_count = keep_count
+            print(f"Truncated positive samples from {len(positive_adv_mask.nonzero())} to {positive_count} to ensure divisibility by world_size={world_size}")
+        
+        print(f"Filtering batch: keeping {positive_count}/{len(positive_adv_mask)} rows with positive advantages.")
+        metrics = {'positive_advantages_ratio': positive_count/len(positive_adv_mask)}
+        
+        # Filter tensor batch using the indices
+        filtered_tensor_batch = batch.batch[positive_indices]
+        
+        # Filter non-tensor batch
+        filtered_non_tensor_batch = {}
+        positive_indices_np = positive_indices.cpu().numpy()
+        for key, val in batch.non_tensor_batch.items():
+            filtered_non_tensor_batch[key] = val[positive_indices_np]
+        
+        # Create new DataProto with filtered data
+        return DataProto(
+            batch=filtered_tensor_batch,
+            non_tensor_batch=filtered_non_tensor_batch,
+            meta_info=batch.meta_info
+        ), metrics
 
     def fit(self):
         """
@@ -1160,7 +1233,8 @@ class RayPPOTrainer(object):
             self._create_dataloader(set_to_self=True, prioritized_sampling=True)
 
         previous_global_steps = self.global_steps
-
+        total_seen_samples = 0
+        
         while self.global_steps < self.total_training_steps:
             epoch = self.global_steps // steps_per_epoch
             
@@ -1260,7 +1334,24 @@ class RayPPOTrainer(object):
                                               lam=self.config.algorithm.lam,
                                               num_repeat=self.config.actor_rollout_ref.rollout.n)
                 
+                    print(f"batch.batch['advantages'] shape: {batch.batch['advantages'].shape}")
+                    print(f"batch.batch['advantages'] values: {batch.batch['advantages']}")
+                    print(f"batch.batch: {batch.batch}")
+                    
+                    # Filter batch to keep only samples with positive advantages
+                    if self.config.trainer.only_positive_advantages:
+                        with torch.no_grad():
+                            batch, positive_advantages_metrics = self.filter_positive_advantages(batch)
+                    metrics.update(positive_advantages_metrics)
 
+                    print(f"batch.batch['advantages'] shape: {batch.batch['advantages'].shape}")
+                    print(f"batch.batch['advantages'] values: {batch.batch['advantages']}")
+                    print(f"batch.batch: {batch.batch}")
+
+                    # re-compute global_valid tokens
+                    batch.meta_info['global_token_num'] = torch.sum(batch.batch['attention_mask'], dim=-1).tolist()
+
+                    
                     # update critic
                     if self.use_critic:
                         with _timer('update_critic', timing_raw):
@@ -1293,6 +1384,8 @@ class RayPPOTrainer(object):
                 metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
                 metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
 
+                total_seen_samples += len(batch.batch)
+                metrics['total_seen_samples'] = total_seen_samples
                 # TODO: make a canonical logger that supports various backend
                 logger.log(data=metrics, step=self.global_steps)
 
