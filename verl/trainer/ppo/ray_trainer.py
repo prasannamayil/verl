@@ -903,9 +903,17 @@ class RayPPOTrainer(object):
         print(f"Computing advantages for entire {dataset_type} dataset (step {step})...")
 
         # important args for advantage tracking
-        n_rollouts = self.config.actor_rollout_ref.rollout.n if self.config.actor_rollout_ref.rollout.n_advantage_tracking is None else self.config.actor_rollout_ref.rollout.n_advantage_tracking
+        if self.advantage_tracking_enabled:
+            n_rollouts = self.config.actor_rollout_ref.rollout.n if self.config.actor_rollout_ref.rollout.n_advantage_tracking is None else self.config.actor_rollout_ref.rollout.n_advantage_tracking
+        else:
+            n_rollouts = self.config.actor_rollout_ref.rollout.n
+        
         shuffle = False
-        batch_size = self.config.data.train_batch_size // (n_rollouts // self.config.actor_rollout_ref.rollout.n)
+        # Fix the division by zero error by checking if n_rollouts equals rollout.n
+        if n_rollouts == self.config.actor_rollout_ref.rollout.n:
+            batch_size = self.config.data.train_batch_size
+        else:
+            batch_size = self.config.data.train_batch_size // (n_rollouts // self.config.actor_rollout_ref.rollout.n)
         
         # TODO creating dataloader again is inefficient. But doing it anyway because I want advantage computation for same samples. 
         # Create and choose the appropriate dataloader
@@ -1062,6 +1070,35 @@ class RayPPOTrainer(object):
             print(f"Saved {dataset_type} advantage data to {filepath}")
 
             return advantage_variances
+        
+        elif prioritization_type == 'hard_sampling':
+            advantage_max = []
+            for sample_id in sorted(list(all_advantages.keys())):
+                # Extract all advantage values
+                advantage_values = [entry['advantage'] for entry in all_advantages[sample_id]]
+                max_value = float(np.max(advantage_values))
+                advantage_max.append(max_value)
+            
+            advantage_data['advantage_max'] = advantage_max
+            
+            torch.save(advantage_data, filepath)
+            print(f"Saved {dataset_type} advantage data to {filepath}")
+
+            return advantage_max
+        elif prioritization_type == 'easy_sampling':
+            advantage_min = []
+            for sample_id in sorted(list(all_advantages.keys())):
+                # Extract all advantage values
+                advantage_values = [entry['advantage'] for entry in all_advantages[sample_id]]
+                min_value = float(np.min(advantage_values))
+                advantage_min.append(np.abs(min_value))
+            
+            advantage_data['advantage_min'] = advantage_min
+            
+            torch.save(advantage_data, filepath)
+            print(f"Saved {dataset_type} advantage data to {filepath}")
+
+            return advantage_min
         else:
             raise ValueError(f"Invalid prioritization type: {prioritization_type}")
     
@@ -1222,6 +1259,7 @@ class RayPPOTrainer(object):
                                               gamma=self.config.algorithm.gamma,
                                               lam=self.config.algorithm.lam,
                                               num_repeat=self.config.actor_rollout_ref.rollout.n)
+                
 
                     # update critic
                     if self.use_critic:
