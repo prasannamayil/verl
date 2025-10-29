@@ -27,7 +27,7 @@ log_prob_micro_batch_size_per_gpu=160
 
 # Pass@k specific configuration
 adv_estimator=passk_analytical
-passk_k=8  # Pass@8 metric
+passk_k=4  # Pass@8 metric
 passk_reward_threshold=0.5  # Threshold to classify positive/negative responses
 
 # GSPO loss configuration (sequence-level optimization)

@@ -482,8 +482,17 @@ def compute_passk_analytical_advantage(
             n_pos = is_positive.sum().item()
             n_neg = n_rollout - n_pos
             
-            if n_pos == 0 or n_neg == 0:
-                # All responses are same class - use uniform zero advantage
+            # Skip groups where we can't form diverse subsets
+            # If n_pos < k, all groups would be 100% pass (trivial)
+            # If n_neg < k, all groups would be 0% pass (trivial)
+            # In these cases, the variance formula breaks down (sigma → 0)
+            if n_pos < k or n_neg < k:
+                # For trivial cases, assign small uniform advantages based on reward
+                for local_i, global_i in enumerate(id2indices[idx]):
+                    if is_positive[local_i]:
+                        advantages[global_i] = 0.1  # Small positive advantage
+                    else:
+                        advantages[global_i] = -0.1  # Small negative advantage
                 continue
             
             # Calculate group statistics using Eq. 11 and 12
@@ -491,16 +500,14 @@ def compute_passk_analytical_advantage(
             n_total_groups = comb(n_rollout, k, exact=True)
             
             # N_neg^group = C(n_neg, k) (groups with only negative responses)
-            if n_neg >= k:
-                n_neg_groups = comb(n_neg, k, exact=True)
-            else:
-                n_neg_groups = 0
+            n_neg_groups = comb(n_neg, k, exact=True)
             
             # R^group = 1 - N_neg^group / N_total^group (Eq. 11)
             r_group = 1.0 - (n_neg_groups / n_total_groups)
             
             # σ^group = sqrt(R^group × (1 - R^group)) (Eq. 12)
-            sigma_group = np.sqrt(r_group * (1.0 - r_group)) + epsilon
+            # Use max() to ensure minimum variance and prevent extreme advantages
+            sigma_group = max(np.sqrt(r_group * (1.0 - r_group)), 0.01)
             
             # Calculate advantages using Eq. 14 and 15
             # Â_pos = (1 - R^group) / σ^group (Eq. 14)
