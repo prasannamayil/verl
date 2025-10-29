@@ -431,6 +431,18 @@ class MegatronPPOActor(BasePPOActor):
                 old_log_prob = data["old_log_probs"]
                 advantages = data["advantages"]
 
+                # Apply entropy-based advantage shaping if enabled
+                if self.config.get("use_entropy_advantage_shaping", False) and calculate_entropy:
+                    entropy = output["entropy"][:, -response_length - 1 : -1].contiguous()
+                    alpha = self.config.entropy_advantage_alpha
+                    kappa = self.config.entropy_advantage_kappa
+                    # Shape: adv += min(alpha * entropy.detach(), |adv|/kappa)
+                    entropy_term = torch.min(
+                        alpha * entropy.detach(),
+                        advantages.abs() / kappa
+                    )
+                    advantages = advantages + entropy_term
+
                 entropy_coeff = self.config.entropy_coeff
                 loss_agg_mode = self.config.loss_agg_mode
 
@@ -638,6 +650,9 @@ class MegatronPPOActor(BasePPOActor):
                 chunk.zero_grad_buffer()
 
             calculate_entropy = self.config.entropy_coeff != 0
+            # Always calculate entropy if using entropy-based advantage shaping
+            if self.config.get("use_entropy_advantage_shaping", False):
+                calculate_entropy = True
             if data.meta_info.get("micro_batch_size", None) is not None:
                 micro_batch_size = data.meta_info["micro_batch_size"]
             else:

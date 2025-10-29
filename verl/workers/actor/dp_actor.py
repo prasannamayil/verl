@@ -423,9 +423,23 @@ class DataParallelPPOActor(BasePPOActor):
                     calculate_entropy = False
                     if entropy_coeff != 0:
                         calculate_entropy = True
+                    # Always calculate entropy if using entropy-based advantage shaping
+                    if self.config.get("use_entropy_advantage_shaping", False):
+                        calculate_entropy = True
                     entropy, log_prob = self._forward_micro_batch(
                         model_inputs, temperature=temperature, calculate_entropy=calculate_entropy
                     )
+
+                    # Apply entropy-based advantage shaping
+                    if self.config.get("use_entropy_advantage_shaping", False):
+                        alpha = self.config.entropy_advantage_alpha
+                        kappa = self.config.entropy_advantage_kappa
+                        # Shape: adv += min(alpha * entropy.detach(), |adv|/kappa)
+                        entropy_term = torch.min(
+                            alpha * entropy.detach(),
+                            advantages.abs() / kappa
+                        )
+                        advantages = advantages + entropy_term
 
                     # for fully_async_policy recipe
                     if hasattr(self.config, "use_rollout_log_probs") and self.config.use_rollout_log_probs:

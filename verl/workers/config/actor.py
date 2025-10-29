@@ -78,6 +78,9 @@ class ActorConfig(BaseConfig):
         kl_loss_type (str): Type of KL loss to use.
         ppo_epochs (int): Number of PPO epochs per training step.
         shuffle (bool): Whether to shuffle data during training.
+        use_entropy_advantage_shaping (bool): Whether to use entropy-based advantage shaping.
+        entropy_advantage_alpha (float): Alpha coefficient for entropy-based advantage shaping.
+        entropy_advantage_kappa (float): Kappa coefficient for entropy-based advantage shaping.
         checkpoint (CheckpointConfig): Configuration for checkpointing.
         optim (OptimizerConfig): Configuration for optimizer.
         use_fused_kernels (bool): Whether to use custom fused kernels (e.g., FlashAttention, fused MLP).
@@ -112,6 +115,9 @@ class ActorConfig(BaseConfig):
     kl_loss_type: str = "low_var_kl"
     ppo_epochs: int = 1
     shuffle: bool = False
+    use_entropy_advantage_shaping: bool = False
+    entropy_advantage_alpha: float = 0.1
+    entropy_advantage_kappa: float = 1.0
     checkpoint: CheckpointConfig = field(default_factory=CheckpointConfig)
     optim: OptimizerConfig = field(default_factory=OptimizerConfig)
     use_fused_kernels: bool = False
