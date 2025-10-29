@@ -70,15 +70,16 @@ def _to_json_serializable(obj: Any) -> Any:
 class JSONLogger:
     """Logger that saves metrics to JSON files."""
     
-    def __init__(self, log_dir: str):
+    def __init__(self, log_dir: str, filename: str = "metrics.jsonl"):
         """
         Initialize the JSON logger.
         
         Args:
             log_dir: Directory to save the JSON log files
+            filename: Name of the JSONL file (default: "metrics.jsonl")
         """
         self.log_dir = log_dir
-        self.metrics_file = os.path.join(log_dir, "metrics.jsonl")
+        self.metrics_file = os.path.join(log_dir, filename)
         os.makedirs(log_dir, exist_ok=True)
         
         # Create metrics file or clear it if it exists

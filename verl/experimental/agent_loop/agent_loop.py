@@ -335,9 +335,12 @@ class AgentLoopWorkerBase:
         )
 
         # override sampling params for validation
+        # Prefer meta_info parameters (explicitly set by trainer) over config.val_kwargs
         if batch.meta_info.get("validate", False):
-            sampling_params["top_p"] = config.val_kwargs.top_p
-            sampling_params["temperature"] = config.val_kwargs.temperature
+            sampling_params["top_p"] = batch.meta_info.get("top_p", config.val_kwargs.top_p)
+            sampling_params["temperature"] = batch.meta_info.get("temperature", config.val_kwargs.temperature)
+            if "top_k" in batch.meta_info:
+                sampling_params["top_k"] = batch.meta_info["top_k"]
 
         # by default, we assume it's a single turn agent
         if "agent_name" not in batch.non_tensor_batch:

@@ -423,8 +423,12 @@ class RayPPOTrainer:
         except Exception as e:
             print(f"Warning: Could not set total_training_steps in config. Structure missing? Error: {e}")
 
-    def _dump_generations(self, inputs, outputs, gts, scores, reward_extra_infos_dict, dump_path):
-        """Dump rollout/validation samples as JSONL."""
+    def _dump_generations(self, inputs, outputs, gts, scores, reward_extra_infos_dict, dump_path, uids=None):
+        """Dump rollout/validation samples as JSONL.
+        
+        For validation with n samples per prompt, all n samples are dumped with the same UID,
+        allowing easy grouping by prompt for pass@k analysis.
+        """
         os.makedirs(dump_path, exist_ok=True)
         filename = os.path.join(dump_path, f"{self.global_steps}.jsonl")
 
@@ -436,6 +440,10 @@ class RayPPOTrainer:
             "score": scores,
             "step": [self.global_steps] * n,
         }
+        
+        # Include UIDs if provided (for grouping multiple samples per prompt)
+        if uids is not None:
+            base_data["uid"] = uids
 
         for k, v in reward_extra_infos_dict.items():
             if len(v) == n:
@@ -449,7 +457,7 @@ class RayPPOTrainer:
         with open(filename, "w") as f:
             f.write("\n".join(lines) + "\n")
 
-        print(f"Dumped generations to {filename}")
+        print(f"Dumped {n} generations to {filename}")
 
     def _log_rollout_data(
         self, batch: DataProto, reward_extra_infos_dict: dict, timing_raw: dict, rollout_data_dir: str
@@ -536,6 +544,20 @@ class RayPPOTrainer:
         sample_turns = []
         sample_uids = []
 
+        # Use training rollout n for validation (always match training)
+        # Ensure validation sampling params (temperature, top_p, ...) match training rollout
+        try:
+            with open_dict(self.config):
+                self.config.actor_rollout_ref.rollout.val_kwargs.temperature = self.config.actor_rollout_ref.rollout.temperature
+                self.config.actor_rollout_ref.rollout.val_kwargs.top_p = self.config.actor_rollout_ref.rollout.top_p
+                self.config.actor_rollout_ref.rollout.val_kwargs.top_k = self.config.actor_rollout_ref.rollout.top_k
+                self.config.actor_rollout_ref.rollout.val_kwargs.do_sample = True
+        except Exception as e:
+            print(f"Warning: Unable to sync val_kwargs sampling params: {e}")
+
+        val_n_samples = self.config.actor_rollout_ref.rollout.n
+        print(f"Validation will generate {val_n_samples} samples per prompt (matching training rollout.n)")
+
         for test_data in self.val_dataloader:
             test_batch = DataProto.from_single_dict(test_data)
 
@@ -544,10 +566,8 @@ class RayPPOTrainer:
                     [str(uuid.uuid4()) for _ in range(len(test_batch.batch))], dtype=object
                 )
 
-            # repeat test batch
-            test_batch = test_batch.repeat(
-                repeat_times=self.config.actor_rollout_ref.rollout.val_kwargs.n, interleave=True
-            )
+            # repeat test batch to generate n samples per prompt
+            test_batch = test_batch.repeat(repeat_times=val_n_samples, interleave=True)
 
             # we only do validation on rule-based rm
             if self.config.reward_model.enable and test_batch[0].non_tensor_batch["reward_model"]["style"] == "model":
@@ -570,7 +590,11 @@ class RayPPOTrainer:
                 "eos_token_id": self.tokenizer.eos_token_id,
                 "pad_token_id": self.tokenizer.pad_token_id,
                 "recompute_log_prob": False,
-                "do_sample": self.config.actor_rollout_ref.rollout.val_kwargs.do_sample,
+                # Force stochastic sampling settings to match training rollout settings
+                "do_sample": True,
+                "temperature": self.config.actor_rollout_ref.rollout.temperature,
+                "top_p": self.config.actor_rollout_ref.rollout.top_p,
+                "top_k": self.config.actor_rollout_ref.rollout.top_k,
                 "validate": True,
                 "global_steps": self.global_steps,
             }
@@ -622,7 +646,7 @@ class RayPPOTrainer:
 
         self._maybe_log_val_generations(inputs=sample_inputs, outputs=sample_outputs, scores=sample_scores)
 
-        # dump generations
+        # dump generations (all n samples per prompt with UIDs for grouping)
         val_data_dir = self.config.trainer.get("validation_data_dir", None)
         if val_data_dir:
             self._dump_generations(
@@ -632,6 +656,7 @@ class RayPPOTrainer:
                 scores=sample_scores,
                 reward_extra_infos_dict=reward_extra_infos_dict,
                 dump_path=val_data_dir,
+                uids=sample_uids,
             )
 
         for key_info, lst in reward_extra_infos_dict.items():
@@ -656,6 +681,83 @@ class RayPPOTrainer:
                         metric_sec = "val-aux"
                     pfx = f"{metric_sec}/{data_source}/{var_name}/{metric_name}"
                     metric_dict[pfx] = metric_val
+
+        # Compute pass@k metrics for k in [1, 2, 4, 8, ..., n]
+        # pass@k = probability that at least one correct answer exists among k samples
+        n_samples = val_n_samples
+        if n_samples >= 1:
+            # Group samples by UID and data source
+            data_src2uid2var2vals = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+            for idx, data_source in enumerate(data_sources):
+                uid = sample_uids[idx]
+                for var_name, var_vals in reward_extra_infos_dict.items():
+                    if len(var_vals) == len(sample_uids) and not isinstance(var_vals[idx], str):
+                        data_src2uid2var2vals[data_source][uid][var_name].append(var_vals[idx])
+
+            # Determine all k values (powers of 2 up to n)
+            k_values = []
+            k = 1
+            while k <= n_samples:
+                k_values.append(k)
+                k *= 2
+            # Ensure n_samples is included if it's not a power of 2
+            if k_values[-1] != n_samples:
+                k_values.append(n_samples)
+
+            print(f"Computing pass@k for k in {k_values}")
+
+            # Compute pass@k for each data source and variable
+            for data_source, uid2var2vals in data_src2uid2var2vals.items():
+                for var_name in ["acc", "reward"]:
+                    if var_name not in reward_extra_infos_dict:
+                        continue
+
+                    for k in k_values:
+                        pass_at_k_per_prompt = []
+
+                        for uid, var2vals in uid2var2vals.items():
+                            if var_name not in var2vals:
+                                continue
+
+                            values = np.array(var2vals[var_name])
+                            total_samples = len(values)
+
+                            if total_samples < k:
+                                # Not enough samples for this k
+                                continue
+
+                            # Determine correctness for each sample
+                            if var_name == "acc":
+                                is_correct = values >= 1.0
+                            else:  # reward
+                                is_correct = values > 0
+
+                            if k == total_samples:
+                                # Exact computation: do we have at least one correct?
+                                passed = np.any(is_correct)
+                                pass_at_k_per_prompt.append(1.0 if passed else 0.0)
+                            else:
+                                # Estimate by sampling multiple non-overlapping subsets
+                                # Number of non-overlapping subsets we can create
+                                num_subsets = total_samples // k
+
+                                subset_passes = []
+                                for i in range(num_subsets):
+                                    subset_correct = is_correct[i * k : (i + 1) * k]
+                                    subset_passed = np.any(subset_correct)
+                                    subset_passes.append(1.0 if subset_passed else 0.0)
+
+                                # Average across subsets for this prompt
+                                pass_at_k_per_prompt.append(np.mean(subset_passes))
+
+                        if pass_at_k_per_prompt:
+                            # Average across all prompts
+                            pass_at_k_value = np.mean(pass_at_k_per_prompt)
+                            # Add to metrics
+                            is_core_var = var_name == core_var
+                            metric_sec = "val-core" if is_core_var else "val-aux"
+                            metric_key = f"{metric_sec}/{data_source}/{var_name}/pass@{k}"
+                            metric_dict[metric_key] = pass_at_k_value
 
         if len(sample_turns) > 0:
             sample_turns = np.concatenate(sample_turns)
@@ -1011,6 +1113,44 @@ class RayPPOTrainer:
             default_backend=self.config.trainer.logger,
             config=OmegaConf.to_container(self.config, resolve=True),
         )
+        
+        # Create separate loggers for validation metrics (evals.jsonl) and training metrics
+        eval_logger = None
+        eval_logger_repo = None  # Repo-level copy for version control
+        metrics_logger_repo = None  # Repo-level copy for training metrics
+        
+        if "local_json" in self.config.trainer.logger:
+            from verl.utils.logger.json_logger import JSONLogger
+            
+            # Primary eval logger in checkpoint directory
+            local_dir = self.config.trainer.get('default_local_dir', 'checkpoints')
+            eval_logger = JSONLogger(log_dir=local_dir, filename="evals.jsonl")
+            
+            # Repo-level copies with experiment name prefix for sharing/version control
+            repo_logs_dir = self.config.trainer.get('repo_logs_dir', 'results')
+            experiment_name = self.config.trainer.experiment_name
+            
+            # Repo-level eval logger
+            eval_logger_repo = JSONLogger(
+                log_dir=repo_logs_dir, 
+                filename=f"{experiment_name}_evals.jsonl"
+            )
+            print(f"Repo-level eval logs will be saved to: {repo_logs_dir}/{experiment_name}_evals.jsonl")
+            
+            # Repo-level metrics logger (for training metrics)
+            metrics_logger_repo = JSONLogger(
+                log_dir=repo_logs_dir,
+                filename=f"{experiment_name}_metrics.jsonl"
+            )
+            print(f"Repo-level training metrics will be saved to: {repo_logs_dir}/{experiment_name}_metrics.jsonl")
+        
+        # Set default validation_data_dir to checkpoint_dir/validation_data if not specified
+        if self.config.trainer.get("validation_data_dir", None) is None:
+            from omegaconf import open_dict
+            with open_dict(self.config):
+                local_dir = self.config.trainer.get('default_local_dir', 'checkpoints')
+                self.config.trainer.validation_data_dir = os.path.join(local_dir, "validation_data")
+                print(f"Validation data will be saved to: {self.config.trainer.validation_data_dir}")
 
         self.global_steps = 0
 
@@ -1024,6 +1164,11 @@ class RayPPOTrainer:
             assert val_metrics, f"{val_metrics=}"
             pprint(f"Initial validation metrics: {val_metrics}")
             logger.log(data=val_metrics, step=self.global_steps)
+            # Log validation metrics to separate evals.jsonl files
+            if eval_logger is not None:
+                eval_logger.log(data=val_metrics, step=self.global_steps)
+                if eval_logger_repo is not None:
+                    eval_logger_repo.log(data=val_metrics, step=self.global_steps)
             if self.config.trainer.get("val_only", False):
                 return
 
@@ -1238,6 +1383,7 @@ class RayPPOTrainer:
                         self._log_rollout_data(batch, reward_extra_infos_dict, timing_raw, rollout_data_dir)
 
                 # validate
+                val_metrics = None
                 if (
                     self.val_reward_fn is not None
                     and self.config.trainer.test_freq > 0
@@ -1247,7 +1393,8 @@ class RayPPOTrainer:
                         val_metrics: dict = self._validate()
                         if is_last_step:
                             last_val_metrics = val_metrics
-                    metrics.update(val_metrics)
+                    # Don't add validation metrics to main metrics dict anymore
+                    # They will be logged separately to evals.jsonl
 
                 # Check if the ESI (Elastic Server Instance)/training plan is close to expiration.
                 esi_close_to_expiration = should_save_ckpt_esi(
@@ -1307,6 +1454,16 @@ class RayPPOTrainer:
 
                 # TODO: make a canonical logger that supports various backend
                 logger.log(data=metrics, step=self.global_steps)
+                
+                # Also log training metrics to repo-level copy
+                if metrics_logger_repo is not None:
+                    metrics_logger_repo.log(data=metrics, step=self.global_steps)
+                
+                # Log validation metrics separately to evals.jsonl files
+                if val_metrics is not None and eval_logger is not None:
+                    eval_logger.log(data=val_metrics, step=self.global_steps)
+                    if eval_logger_repo is not None:
+                        eval_logger_repo.log(data=val_metrics, step=self.global_steps)
 
                 progress_bar.update(1)
                 self.global_steps += 1

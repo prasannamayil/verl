@@ -68,13 +68,14 @@ class HFRollout(BaseRollout):
                 "num_beams": 1,
             }
         elif is_validate:
-            # do validate and do sample -> use val_kwargs
+            # Prefer meta_info parameters (explicitly set by trainer) over config.val_kwargs
+            # This ensures validation can override default config for stochastic sampling
             kwargs = {
                 "do_sample": True,
                 "num_beams": 1,
-                "top_k": max(0, self.config.val_kwargs.top_k),  # to be compatible with vllm
-                "top_p": self.config.val_kwargs.top_p,
-                "temperature": self.config.val_kwargs.temperature,
+                "top_k": max(0, prompts.meta_info.get("top_k", self.config.val_kwargs.top_k)),
+                "top_p": prompts.meta_info.get("top_p", self.config.val_kwargs.top_p),
+                "temperature": prompts.meta_info.get("temperature", self.config.val_kwargs.temperature),
                 "num_return_sequences": 1,  # if validate, already repeat in ray_trainer
             }
         else:

@@ -712,11 +712,13 @@ class SGLangRollout(BaseRollout):
                 }
             )
         elif is_validate:
+            # Prefer meta_info parameters (explicitly set by trainer) over config.val_kwargs
+            # This ensures validation can override default config for stochastic sampling
             request_sampling_params.update(
                 {
-                    "top_k": self.config.val_kwargs.top_k,
-                    "top_p": self.config.val_kwargs.top_p,
-                    "temperature": self.config.val_kwargs.temperature,
+                    "top_k": prompts.meta_info.get("top_k", self.config.val_kwargs.top_k),
+                    "top_p": prompts.meta_info.get("top_p", self.config.val_kwargs.top_p),
+                    "temperature": prompts.meta_info.get("temperature", self.config.val_kwargs.temperature),
                     "n": 1,  # if validate, already repeat in ray_trainer
                 }
             )
