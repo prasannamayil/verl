@@ -93,6 +93,15 @@ ppo_epochs: 1
 # Shuffle training data across PPO epochs
 shuffle: false
 
+# Whether to use entropy-based advantage shaping
+use_entropy_advantage_shaping: false
+
+# Alpha coefficient for entropy-based advantage shaping
+entropy_advantage_alpha: 0.1
+
+# Kappa coefficient for entropy-based advantage shaping
+entropy_advantage_kappa: 1.0
+
 # checkpoint configs
 checkpoint:
 

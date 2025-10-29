@@ -7,7 +7,7 @@
 # specify the default per-component configs
 defaults:
 
-  # <folder_name>@<field_name>.<field_name>: <yaml_file_name>
+  # <folder_name>@<field_namen>.<field_name>: <yaml_file_name>
   # actor_rollout_ref.actor: trainer/config/actor/dp_actor.yaml
   - actor@actor_rollout_ref.actor: dp_actor
 
@@ -154,7 +154,7 @@ trainer:
   experiment_name: gsm8k
 
   # Logging backends to use: "console", "wandb", etc.
-  logger: ["console", "wandb"]
+  logger: ["console", "wandb", "local"]
 
   # Number of generations to log during validation
   log_val_generations: 0

@@ -45,6 +45,7 @@ class Tracking:
         "clearml",
         "trackio",
         "file",
+        "local_json",
     ]
 
     def __init__(self, project_name, experiment_name, default_backend: str | list[str] = "console", config=None):
@@ -149,6 +150,12 @@ class Tracking:
 
         if "file" in default_backend:
             self.logger["file"] = FileLogger(project_name, experiment_name)
+            
+        if "local_json" in default_backend:
+            from verl.utils.logger.json_logger import JSONLogger
+            local_dir = config.get('trainer', {}).get('default_local_dir', 'checkpoints') if config else 'checkpoints'
+            self.json_logger = JSONLogger(log_dir=local_dir)
+            self.logger["local_json"] = self.json_logger
 
     def log(self, data, step, backend=None):
         for default_backend, logger_instance in self.logger.items():
