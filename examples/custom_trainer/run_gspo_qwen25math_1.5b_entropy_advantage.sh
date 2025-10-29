@@ -41,15 +41,23 @@ kl_coef=0.0
 use_kl_loss=false
 kl_loss_coef=0.0
 
+# Entropy-Based Advantage Shaping Parameters
+use_entropy_advantage_shaping=true
+entropy_advantage_alpha=0.4  # Alpha coefficient for entropy term
+entropy_advantage_kappa=2.0  # Kappa coefficient for bounding
+
 
 # Experiment naming
-experiment_name=gspo_qwen25math_1.5b_${dataset}_epochs${epochs}_rollouts${rollouts}_bsz${batch_size}_resp_len${response_length}_
+experiment_name=gspo_entropy_advantage_qwen25math_1.5b_${dataset}_epochs${epochs}_rollouts${rollouts}_alpha${entropy_advantage_alpha}_kappa${entropy_advantage_kappa}
 checkpoint_dir=/fast/pmayilvahanan/verl_checkpoints/exploration/${experiment_name}
-# Run training with GSPO
+# Run training with GSPO + Entropy Advantage Shaping
 python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=${adv_estimator} \
     actor_rollout_ref.actor.policy_loss.loss_mode=${loss_mode} \
     actor_rollout_ref.actor.loss_agg_mode=${loss_agg_mode} \
+    actor_rollout_ref.actor.use_entropy_advantage_shaping=${use_entropy_advantage_shaping} \
+    actor_rollout_ref.actor.entropy_advantage_alpha=${entropy_advantage_alpha} \
+    actor_rollout_ref.actor.entropy_advantage_kappa=${entropy_advantage_kappa} \
     data.train_files=/fast/pmayilvahanan/datasets/dapo_math_17k/dapo_non_matching_math_b_5k.parquet \
     data.val_files=[/fast/pmayilvahanan/datasets/aime_2024/test_nosuffix.parquet,/fast/pmayilvahanan/datasets/aime_2025/test_nosuffix.parquet,/fast/pmayilvahanan/datasets/math_b_exploration/qwen25math15_unsolved_no_suffix.parquet] \
     data.train_batch_size=${batch_size} \

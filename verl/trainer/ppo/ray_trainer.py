@@ -1393,8 +1393,6 @@ class RayPPOTrainer:
                         val_metrics: dict = self._validate()
                         if is_last_step:
                             last_val_metrics = val_metrics
-                    # Don't add validation metrics to main metrics dict anymore
-                    # They will be logged separately to evals.jsonl
 
                 # Check if the ESI (Elastic Server Instance)/training plan is close to expiration.
                 esi_close_to_expiration = should_save_ckpt_esi(
@@ -1459,11 +1457,13 @@ class RayPPOTrainer:
                 if metrics_logger_repo is not None:
                     metrics_logger_repo.log(data=metrics, step=self.global_steps)
                 
-                # Log validation metrics separately to evals.jsonl files
-                if val_metrics is not None and eval_logger is not None:
-                    eval_logger.log(data=val_metrics, step=self.global_steps)
-                    if eval_logger_repo is not None:
-                        eval_logger_repo.log(data=val_metrics, step=self.global_steps)
+                # Log validation metrics to all loggers (wandb, console, etc.) and separate evals.jsonl files
+                if val_metrics is not None:
+                    logger.log(data=val_metrics, step=self.global_steps)
+                    if eval_logger is not None:
+                        eval_logger.log(data=val_metrics, step=self.global_steps)
+                        if eval_logger_repo is not None:
+                            eval_logger_repo.log(data=val_metrics, step=self.global_steps)
 
                 progress_bar.update(1)
                 self.global_steps += 1

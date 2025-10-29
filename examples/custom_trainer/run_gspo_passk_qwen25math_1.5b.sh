@@ -16,8 +16,8 @@ project_name=verl_exploration
 n_gpus=8
 nnodes=1
 
-# Model configuration for GSPO
-response_length=1024  # 8k tokens as per GSPO paper
+# Model configuration for Pass@k + GSPO training
+response_length=1024
 prompt_length=3072
 total_ctx=$((prompt_length + response_length))
 batch_size=1024
@@ -25,29 +25,35 @@ ppo_mini_batch_size=512
 ppo_micro_batch_size_per_gpu=16
 log_prob_micro_batch_size_per_gpu=160
 
-# GSPO-specific configuration
-adv_estimator=grpo
+# Pass@k specific configuration
+adv_estimator=passk_analytical
+passk_k=8  # Pass@8 metric
+passk_reward_threshold=0.5  # Threshold to classify positive/negative responses
+
+# GSPO loss configuration (sequence-level optimization)
 loss_mode=gspo
 loss_agg_mode="seq-mean-token-mean"
 learning_rate=1e-6
 
-# GSPO clipping parameters
-clip_ratio_low=0.0003  # as recommended by the paper
-clip_ratio_high=0.0004 # as recommended by the paper
+# GSPO clipping parameters (as recommended by the paper)
+clip_ratio_low=0.0003
+clip_ratio_high=0.0004
 
-# No KL for GSPO
+# No KL for Pass@k + GSPO
 use_kl_in_reward=false
 kl_coef=0.0
 use_kl_loss=false
 kl_loss_coef=0.0
 
-
 # Experiment naming
-experiment_name=gspo_qwen25math_1.5b_${dataset}_epochs${epochs}_rollouts${rollouts}_bsz${batch_size}_resp_len${response_length}_
+experiment_name=gspo_passk_qwen25math_1.5b_${dataset}_epochs${epochs}_rollouts${rollouts}_k${passk_k}_bsz${batch_size}_resp_len${response_length}
 checkpoint_dir=/fast/pmayilvahanan/verl_checkpoints/exploration/${experiment_name}
-# Run training with GSPO
+
+# Run training with Pass@k analytical advantage + GSPO loss
 python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=${adv_estimator} \
+    algorithm.passk_k=${passk_k} \
+    algorithm.passk_reward_threshold=${passk_reward_threshold} \
     actor_rollout_ref.actor.policy_loss.loss_mode=${loss_mode} \
     actor_rollout_ref.actor.loss_agg_mode=${loss_agg_mode} \
     data.train_files=/fast/pmayilvahanan/datasets/dapo_math_17k/dapo_non_matching_math_b_5k.parquet \
@@ -95,3 +101,4 @@ python3 -m verl.trainer.main_ppo \
     trainer.default_local_dir=${checkpoint_dir} \
     +trainer.save_config=True \
     reward_model.reward_manager=dapo
+

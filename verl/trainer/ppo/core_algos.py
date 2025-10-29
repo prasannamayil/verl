@@ -105,6 +105,7 @@ class AdvantageEstimator(str, Enum):
     GPG = "gpg"
     RLOO_VECTORIZED = "rloo_vectorized"
     GRPO_VECTORIZED = "grpo_vectorized"
+    PASSK_ANALYTICAL = "passk_analytical"
 
 
 ADV_ESTIMATOR_REGISTRY: dict[str, Any] = {}
@@ -413,6 +414,109 @@ def compute_grpo_passk_outcome_advantage(
                 advantage = advantage / (std + epsilon)
             advantages[i_max] = advantage
 
+    advantages = advantages.unsqueeze(-1) * response_mask
+    return advantages, advantages
+
+
+@register_adv_est(AdvantageEstimator.PASSK_ANALYTICAL)
+def compute_passk_analytical_advantage(
+    token_level_rewards: torch.Tensor,
+    response_mask: torch.Tensor,
+    index: np.ndarray,
+    epsilon: float = 1e-6,
+    config: Optional[AlgoConfig] = None,
+    **kwargs,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Compute advantage for Pass@k using analytical derivation as described in Algorithm 3.
+    
+    This implementation follows the bootstrap sampling mechanism with analytical solution
+    for response advantages to remove variance from the sampling operation.
+    
+    Args:
+        token_level_rewards: (bs, response_length)
+        response_mask: (bs, response_length)
+        index: (bs,) → group ID per sample
+        epsilon: float for numerical stability
+        config: (AlgoConfig) algorithm settings
+        
+    Returns:
+        advantages: (bs, response_length)
+        returns: (bs, response_length)
+    """
+    from scipy.special import comb
+    
+    assert config is not None, "config must be provided for pass@k analytical advantage"
+    
+    # Get k for Pass@k metric from config
+    k = config.get("passk_k", 4)  # default to Pass@4
+    
+    # Get reward threshold to determine positive/negative responses
+    reward_threshold = config.get("passk_reward_threshold", 0.5)
+    
+    scores = token_level_rewards.sum(dim=-1)  # (bs,)
+    advantages = torch.zeros_like(scores)
+    
+    # Group responses by prompt (using index)
+    id2scores = defaultdict(list)
+    id2indices = defaultdict(list)
+    
+    with torch.no_grad():
+        bsz = scores.shape[0]
+        for i in range(bsz):
+            idx = index[i]
+            id2scores[idx].append(scores[i])
+            id2indices[idx].append(i)
+        
+        for idx in id2scores:
+            rewards = torch.stack(id2scores[idx])  # (n_rollout,)
+            n_rollout = rewards.numel()
+            
+            if n_rollout < k:
+                raise ValueError(
+                    f"Pass@k requires at least k={k} samples per group. Got {n_rollout} for group {idx}."
+                )
+            
+            # Determine positive and negative responses
+            is_positive = rewards > reward_threshold
+            n_pos = is_positive.sum().item()
+            n_neg = n_rollout - n_pos
+            
+            if n_pos == 0 or n_neg == 0:
+                # All responses are same class - use uniform zero advantage
+                continue
+            
+            # Calculate group statistics using Eq. 11 and 12
+            # N_total^group = C(n_rollout, k)
+            n_total_groups = comb(n_rollout, k, exact=True)
+            
+            # N_neg^group = C(n_neg, k) (groups with only negative responses)
+            if n_neg >= k:
+                n_neg_groups = comb(n_neg, k, exact=True)
+            else:
+                n_neg_groups = 0
+            
+            # R^group = 1 - N_neg^group / N_total^group (Eq. 11)
+            r_group = 1.0 - (n_neg_groups / n_total_groups)
+            
+            # σ^group = sqrt(R^group × (1 - R^group)) (Eq. 12)
+            sigma_group = np.sqrt(r_group * (1.0 - r_group)) + epsilon
+            
+            # Calculate advantages using Eq. 14 and 15
+            # Â_pos = (1 - R^group) / σ^group (Eq. 14)
+            adv_pos = (1.0 - r_group) / sigma_group
+            
+            # Â_neg = -R^group / σ^group (Eq. 15)
+            adv_neg = -r_group / sigma_group
+            
+            # Assign advantages to each response
+            for local_i, global_i in enumerate(id2indices[idx]):
+                if is_positive[local_i]:
+                    advantages[global_i] = adv_pos
+                else:
+                    advantages[global_i] = adv_neg
+    
+    # Broadcast to token dimension and apply mask
     advantages = advantages.unsqueeze(-1) * response_mask
     return advantages, advantages
 
