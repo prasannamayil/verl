@@ -533,6 +533,9 @@ class RayPPOTrainer:
         return gen_batch
 
     def _validate(self):
+        import time
+        validation_start_time = time.time()
+        
         data_source_lst = []
         reward_extra_infos_dict: dict[str, list] = defaultdict(list)
 
@@ -765,6 +768,14 @@ class RayPPOTrainer:
             metric_dict["val-aux/num_turns/max"] = sample_turns.max()
             metric_dict["val-aux/num_turns/mean"] = sample_turns.mean()
 
+        # Add validation timing
+        validation_end_time = time.time()
+        validation_duration = validation_end_time - validation_start_time
+        metric_dict["val-aux/validation_time_seconds"] = validation_duration
+        metric_dict["val-aux/validation_time_minutes"] = validation_duration / 60.0
+        
+        print(f"Validation completed in {validation_duration:.2f}s ({validation_duration/60.0:.2f}m)")
+        
         return metric_dict
 
     def init_workers(self):
@@ -1124,18 +1135,24 @@ class RayPPOTrainer:
             
             # Primary eval logger in checkpoint directory
             local_dir = self.config.trainer.get('default_local_dir', 'checkpoints')
-            eval_logger = JSONLogger(log_dir=local_dir, filename="evals.jsonl")
+            # Support custom eval filename (e.g., for high pass@k evaluation)
+            eval_filename = self.config.trainer.get('eval_filename', 'evals.jsonl')
+            # Use append mode when using custom eval filename (for multi-checkpoint evaluation)
+            use_append = self.config.trainer.get('eval_append_mode', eval_filename != 'evals.jsonl')
+            eval_logger = JSONLogger(log_dir=local_dir, filename=eval_filename, append=use_append)
             
             # Repo-level copies with experiment name prefix for sharing/version control
             repo_logs_dir = self.config.trainer.get('repo_logs_dir', 'results')
             experiment_name = self.config.trainer.experiment_name
             
-            # Repo-level eval logger
+            # Repo-level eval logger (use custom filename if provided)
+            eval_file_base = eval_filename.replace('.jsonl', '')
             eval_logger_repo = JSONLogger(
                 log_dir=repo_logs_dir, 
-                filename=f"{experiment_name}_evals.jsonl"
+                filename=f"{experiment_name}_{eval_file_base}.jsonl",
+                append=use_append
             )
-            print(f"Repo-level eval logs will be saved to: {repo_logs_dir}/{experiment_name}_evals.jsonl")
+            print(f"Repo-level eval logs will be saved to: {repo_logs_dir}/{experiment_name}_{eval_file_base}.jsonl")
             
             # Repo-level metrics logger (for training metrics)
             metrics_logger_repo = JSONLogger(
@@ -1149,7 +1166,14 @@ class RayPPOTrainer:
             from omegaconf import open_dict
             with open_dict(self.config):
                 local_dir = self.config.trainer.get('default_local_dir', 'checkpoints')
-                self.config.trainer.validation_data_dir = os.path.join(local_dir, "validation_data")
+                # Use custom suffix if using custom eval filename (e.g., validation_data_high_pass)
+                eval_filename = self.config.trainer.get('eval_filename', 'evals.jsonl')
+                if eval_filename != 'evals.jsonl':
+                    suffix = eval_filename.replace('evals_', '').replace('.jsonl', '')
+                    val_data_dirname = f"validation_data_{suffix}"
+                else:
+                    val_data_dirname = "validation_data"
+                self.config.trainer.validation_data_dir = os.path.join(local_dir, val_data_dirname)
                 print(f"Validation data will be saved to: {self.config.trainer.validation_data_dir}")
 
         self.global_steps = 0

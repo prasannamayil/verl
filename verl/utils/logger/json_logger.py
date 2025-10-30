@@ -70,23 +70,30 @@ def _to_json_serializable(obj: Any) -> Any:
 class JSONLogger:
     """Logger that saves metrics to JSON files."""
     
-    def __init__(self, log_dir: str, filename: str = "metrics.jsonl"):
+    def __init__(self, log_dir: str, filename: str = "metrics.jsonl", append: bool = False):
         """
         Initialize the JSON logger.
         
         Args:
             log_dir: Directory to save the JSON log files
             filename: Name of the JSONL file (default: "metrics.jsonl")
+            append: If True, append to existing file; if False, clear existing file
         """
         self.log_dir = log_dir
         self.metrics_file = os.path.join(log_dir, filename)
         os.makedirs(log_dir, exist_ok=True)
         
-        # Create metrics file or clear it if it exists
-        with open(self.metrics_file, 'w') as f:
-            pass
-            
-        print(f"JSONLogger initialized. Metrics will be saved to {self.metrics_file}")
+        # Create metrics file or clear it if it exists (unless append mode)
+        if not append:
+            with open(self.metrics_file, 'w') as f:
+                pass
+            print(f"JSONLogger initialized. Metrics will be saved to {self.metrics_file}")
+        else:
+            # In append mode, just ensure the file exists
+            if not os.path.exists(self.metrics_file):
+                with open(self.metrics_file, 'w') as f:
+                    pass
+            print(f"JSONLogger initialized in append mode. Metrics will be appended to {self.metrics_file}")
         
     def log(self, data: Dict[str, Any], step: int):
         """
