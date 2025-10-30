@@ -490,9 +490,9 @@ def compute_passk_analytical_advantage(
                 # For trivial cases, assign small uniform advantages based on reward
                 for local_i, global_i in enumerate(id2indices[idx]):
                     if is_positive[local_i]:
-                        advantages[global_i] = 0.1  # Small positive advantage
+                        advantages[global_i] = 0.0  # Small positive advantage
                     else:
-                        advantages[global_i] = -0.1  # Small negative advantage
+                        advantages[global_i] = 0.0  # Small negative advantage
                 continue
             
             # Calculate group statistics using Eq. 11 and 12
