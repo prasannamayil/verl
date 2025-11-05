@@ -5,21 +5,40 @@ This directory contains scripts for evaluating all checkpoints in a training run
 ## Overview
 
 The evaluation system supports:
+- **Base model evaluation** - evaluate untrained model for baseline metrics
 - **Automatic evaluation of all checkpoints** in a directory
 - **Resumable evaluation** - skips already-evaluated checkpoints
 - **High pass@k metrics** (pass@1024, pass@512, etc.)
 - **Automatic batch size adjustment** to avoid OOM
 - **Saves evaluation traces** for each checkpoint
 - **Separate result files** (`evals_high_pass.jsonl`) to not interfere with training logs
+- **Timing tracking** - records evaluation duration for each checkpoint
 
 ## Files
 
+- `eval_base_model_highpass.sh` - **NEW**: Evaluate base model (before training) for baseline
 - `eval_all_checkpoints_highpass.sh` - Evaluate all checkpoints with high pass@k
 - `eval_single_checkpoint_highpass.sh` - Evaluate a single checkpoint
 - `view_eval_results.py` - View and analyze evaluation results
 - `README_EVAL_CHECKPOINTS.md` - This file
+- `QUICKSTART_EVAL.md` - Quick start guide
 
 ## Quick Start
+
+### Evaluate Base Model (Baseline)
+
+```bash
+# Evaluate base model before training (pass@1024)
+./eval_base_model_highpass.sh Qwen/Qwen2.5-Math-1.5B 1024
+
+# Custom pass@k and output directory
+./eval_base_model_highpass.sh Qwen/Qwen2.5-Math-1.5B 512 /path/to/output
+```
+
+**Creates**:
+- `/path/to/output/Qwen2_5-Math-1_5B_pass1024/evals_base_pass1024.jsonl`
+- `/path/to/output/Qwen2_5-Math-1_5B_pass1024/validation_data_base_pass1024/`
+- `results/Qwen2_5-Math-1_5B_base_evals_base_pass1024.jsonl`
 
 ### Evaluate All Checkpoints
 
@@ -197,20 +216,29 @@ Monitor disk space and clean up old traces if needed.
 ## Example Workflow
 
 ```bash
-# 1. Train your model (generates checkpoints)
+# 1. Evaluate base model (baseline)
+./eval_base_model_highpass.sh Qwen/Qwen2.5-Math-1.5B 1024
+
+# 2. Train your model (generates checkpoints)
 ./run_gspo_qwen25math_1.5b.sh
 
-# 2. Evaluate all checkpoints with pass@1024
+# 3. Evaluate all checkpoints with pass@1024
 ./eval_all_checkpoints_highpass.sh \
     /fast/pmayilvahanan/verl_checkpoints/exploration/gspo_qwen25math_1.5b_dapo_5k_epochs20_rollouts8_bsz1024_resp_len1024 \
     1024
 
-# 3. View results
+# 4. Compare base model vs trained checkpoints
+echo "=== Base Model ==="
+python view_eval_results.py \
+    results/Qwen2_5-Math-1_5B_base_evals_base_pass1024.jsonl \
+    --metrics pass@1024 --summary-only
+
+echo "=== Trained Checkpoints ==="
 python view_eval_results.py \
     /fast/pmayilvahanan/verl_checkpoints/exploration/gspo_qwen25math_1.5b_dapo_5k_epochs20_rollouts8_bsz1024_resp_len1024/evals_high_pass.jsonl \
     --metrics pass@1024 pass@512 pass@256
 
-# 4. (Optional) Evaluate specific checkpoints with different pass@k
+# 5. (Optional) Evaluate specific checkpoints with different pass@k
 ./eval_single_checkpoint_highpass.sh \
     /fast/pmayilvahanan/verl_checkpoints/exploration/gspo_qwen25math_1.5b_dapo_5k_epochs20_rollouts8_bsz1024_resp_len1024/global_step_48 \
     512

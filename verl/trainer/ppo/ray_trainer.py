@@ -1161,6 +1161,29 @@ class RayPPOTrainer:
             )
             print(f"Repo-level training metrics will be saved to: {repo_logs_dir}/{experiment_name}_metrics.jsonl")
         
+        # Save config.json if requested
+        if self.config.trainer.get('save_config', False):
+            local_dir = self.config.trainer.get('default_local_dir', 'checkpoints')
+            os.makedirs(local_dir, exist_ok=True)
+            config_path = os.path.join(local_dir, 'config.json')
+            
+            # Convert config to a serializable format
+            config_dict = OmegaConf.to_container(self.config, resolve=True)
+            
+            with open(config_path, 'w') as f:
+                json.dump(config_dict, f, indent=2)
+            print(f"Configuration saved to: {config_path}")
+            
+            # Also save to repo_logs_dir if using local_json
+            if "local_json" in self.config.trainer.logger:
+                repo_logs_dir = self.config.trainer.get('repo_logs_dir', 'results')
+                experiment_name = self.config.trainer.experiment_name
+                os.makedirs(repo_logs_dir, exist_ok=True)
+                repo_config_path = os.path.join(repo_logs_dir, f"{experiment_name}_config.json")
+                with open(repo_config_path, 'w') as f:
+                    json.dump(config_dict, f, indent=2)
+                print(f"Repo-level config saved to: {repo_config_path}")
+        
         # Set default validation_data_dir to checkpoint_dir/validation_data if not specified
         if self.config.trainer.get("validation_data_dir", None) is None:
             from omegaconf import open_dict
@@ -1169,6 +1192,9 @@ class RayPPOTrainer:
                 # Use custom suffix if using custom eval filename (e.g., validation_data_high_pass)
                 eval_filename = self.config.trainer.get('eval_filename', 'evals.jsonl')
                 if eval_filename != 'evals.jsonl':
+                    # Extract meaningful suffix from eval filename
+                    # e.g., "evals_high_pass.jsonl" -> "high_pass"
+                    # e.g., "evals_base_pass1024.jsonl" -> "base_pass1024"
                     suffix = eval_filename.replace('evals_', '').replace('.jsonl', '')
                     val_data_dirname = f"validation_data_{suffix}"
                 else:

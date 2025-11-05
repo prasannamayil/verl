@@ -1,19 +1,41 @@
-# Quick Start: Evaluate All Checkpoints with High Pass@k
+# Quick Start: Evaluate Checkpoints with High Pass@k
 
 ## TL;DR
 
 ```bash
+# Evaluate base model (before training) with pass@1024
+./eval_base_model_highpass.sh Qwen/Qwen2.5-Math-1.5B 1024
+
 # Evaluate all checkpoints with pass@1024
 ./eval_all_checkpoints_highpass.sh /path/to/checkpoint_dir 1024
+
+# Evaluate single checkpoint with pass@1024
+./eval_single_checkpoint_highpass.sh /path/to/checkpoint_dir/global_step_80 1024
 
 # View results
 python view_eval_results.py /path/to/checkpoint_dir/evals_high_pass.jsonl --metrics pass@1024
 ```
 
-## Example
+## Examples
+
+### Evaluate Base Model (Baseline)
 
 ```bash
-# 1. Evaluate checkpoints
+cd /fast/pmayilvahanan/verl/examples/custom_trainer
+
+# Evaluate base model before any training
+./eval_base_model_highpass.sh Qwen/Qwen2.5-Math-1.5B 1024
+
+# Custom output directory
+./eval_base_model_highpass.sh Qwen/Qwen2.5-Math-1.5B 1024 /path/to/output
+
+# View base model results
+python view_eval_results.py results/Qwen2_5-Math-1_5B_base_evals_base_pass1024.jsonl
+```
+
+### Evaluate Trained Checkpoints
+
+```bash
 cd /fast/pmayilvahanan/verl/examples/custom_trainer
 
 ./eval_all_checkpoints_highpass.sh \
