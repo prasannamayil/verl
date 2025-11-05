@@ -11,7 +11,29 @@ _target_: verl.workers.config.ActorConfig
 # fsdp, fsdp2 or megatron. must be set.
 strategy: ???
 
-dtype: float16
+# Data type for actor training computations (autocast dtype)
+# Controls: forward pass autocast, gradient scaler activation (for float16 only)
+# Options: 'float16', 'bfloat16', 'float32'
+# Default: float16 (enables FP16 training with gradient scaling)
+# 
+# Common configurations:
+# 1. FP16 everywhere (best memory/speed with gradient scaling):
+#    actor.dtype=float16, rollout.dtype=float16, fsdp_config.model_dtype=fp16
+# 2. Old default (FP32 storage, BF16 computation - CURRENT DEFAULT):
+#    actor.dtype=bfloat16, rollout.dtype=bfloat16, fsdp_config.model_dtype=fp32
+# 3. BF16 everywhere (good stability/memory trade-off):
+#    actor.dtype=bfloat16, rollout.dtype=bfloat16, fsdp_config.model_dtype=bf16
+# 4. Mixed (FP32 storage, FP16 computation with gradient scaling):
+#    actor.dtype=float16, rollout.dtype=float16, fsdp_config.model_dtype=fp32
+#
+# NOTE: actor.dtype CANNOT be float32 when using FlashAttention (flash_attention_2)!
+# FlashAttention only supports fp16 and bfloat16 computation dtypes.
+#
+# Note: For GSPO with long sequences (>2048 tokens), FP16 requires gradient scaling
+# which is automatically enabled. BF16 or FP32 may be more stable for very long contexts.
+# IMPORTANT: FlashAttention REQUIRES fp16 or bfloat16. Cannot use float32 here!
+# For old behavior (FP32 storage, BF16 computation): dtype=bfloat16, model_dtype=fp32
+dtype: bfloat16
 
 # Split each sample into sub-batches of this size for PPO
 ppo_mini_batch_size: 256

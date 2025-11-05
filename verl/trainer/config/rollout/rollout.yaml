@@ -24,9 +24,23 @@ prompt_length: ${oc.select:data.max_prompt_length,512}
 # same as data.max_response_length if it exists
 response_length: ${oc.select:data.max_response_length,512}
 
-# for vllm rollout
-# Rollout model parameters type. Align with actor model's FSDP/Megatron type.
-dtype: float16 # used to be bfloat16
+# Data type for rollout/generation (vLLM/SGLang inference engine)
+# Controls: model weights dtype during generation, KV cache dtype
+# Options: 'float16', 'bfloat16', 'float32' (PyTorch dtype names)
+# Default: float16 (was bfloat16 before FP16 patch)
+#
+# This should typically match actor training dtype for consistency, but can differ:
+# - float16: Best memory/speed for inference, works well with FP16 training
+# - bfloat16: Good stability, slightly more memory than float16
+# - float32: Maximum precision but 2x memory, rarely needed
+#
+# Common configurations:
+# 1. FP16 everywhere: rollout.dtype=float16
+# 2. Old default (BF16 inference - CURRENT): rollout.dtype=bfloat16
+# 3. Mixed precision (FP16 inference with any training dtype): rollout.dtype=float16
+#
+# Note: vLLM requires PyTorch dtype names, not shorthand (use 'float16', not 'fp16')
+dtype: bfloat16
 
 # Fraction of GPU memory used by vLLM/SGLang for KV cache.
 gpu_memory_utilization: 0.5

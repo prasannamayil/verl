@@ -59,6 +59,7 @@ class ActorConfig(BaseConfig):
 
     Args:
         strategy (str): Training strategy. Must be specified.
+        dtype (str): Data type for model training. Options: 'float16', 'bfloat16', 'float32'. Default: 'float16'.
         ppo_mini_batch_size (int): Mini-batch size for PPO training.
         ppo_micro_batch_size (Optional[int]): Micro-batch size for PPO training.
             If None, uses ppo_micro_batch_size_per_gpu.
@@ -94,6 +95,7 @@ class ActorConfig(BaseConfig):
     }
 
     strategy: str = MISSING
+    dtype: str = "float16"
     ppo_mini_batch_size: int = 256
     ppo_micro_batch_size: Optional[int] = None  # deprecate
     ppo_micro_batch_size_per_gpu: Optional[int] = None

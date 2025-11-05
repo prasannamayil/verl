@@ -28,7 +28,27 @@ fsdp_size: -1
 # before the current forward computation.
 forward_prefetch: False
 
-# model dtype of fsdp
+# FSDP model parameter storage dtype (param_dtype in MixedPrecision policy)
+# Controls: How model weights are stored in memory (reduced precision storage)
+# Options: 'fp32', 'fp16', 'bf16' (shorthand notation)
+# Default: fp32 (stores parameters in full precision, only used during computation in lower precision)
+#
+# This is different from actor.dtype:
+# - model_dtype: Storage precision (weights in memory)
+# - actor.dtype: Computation precision (forward/backward pass)
+#
+# Common configurations:
+# 1. FP16 everywhere (best memory/speed): model_dtype=fp16, actor.dtype=float16
+#    - Saves memory, matches computation dtype, requires gradient scaling
+# 2. Old default (FP32 storage, BF16 computation - CURRENT): model_dtype=fp32, actor.dtype=bfloat16
+#    - Stable, more memory for parameters, BF16 computation
+# 3. BF16 everywhere (good balance): model_dtype=bf16, actor.dtype=bfloat16
+#    - Memory efficient, stable, no gradient scaling needed
+# 4. Mixed FP16 (FP32 storage, FP16 computation): model_dtype=fp32, actor.dtype=float16
+#    - Stable parameter storage, fast computation, needs gradient scaling
+#
+# Note: When using FP16 (model_dtype=fp16, actor.dtype=float16), gradient scaling
+# is automatically enabled for numerical stability.
 model_dtype: fp32
 
 # Whether to use original parameters in fsdp. Only avaiable in fsdp1
