@@ -1222,6 +1222,8 @@ def compute_policy_loss_clip_cov(
             Lower bound for clipping covariance. Defaults to 1.0.
         clip_cov_ub (float, optional):
             Upper bound for clipping covariance. Defaults to 5.0.
+        use_is_weighted_cov (bool, optional):
+            If True, compute covariance using IS-weighted advantages (r(a) * A). Defaults to False.
     """
     assert config is not None
     assert not isinstance(config, AlgoConfig), "passing AlgoConfig not supported yet"
@@ -1233,6 +1235,7 @@ def compute_policy_loss_clip_cov(
     cliprange_high = config.clip_ratio_high if config.clip_ratio_high is not None else cliprange
     clip_cov_ub = config.policy_loss.clip_cov_ub if config.policy_loss.clip_cov_ub is not None else 5.0
     clip_cov_lb = config.policy_loss.clip_cov_lb if config.policy_loss.clip_cov_lb is not None else 1.0
+    use_is_weighted_cov = getattr(config.policy_loss, "use_is_weighted_cov", False)
 
     assert clip_cov_ratio > 0, "clip_ratio should be larger than 0."
 
@@ -1251,9 +1254,19 @@ def compute_policy_loss_clip_cov(
     pg_losses2 = -advantages * torch.clamp(ratio, 1 - cliprange_low, 1 + cliprange_high)
     clip_by_origin = (pg_losses2 > pg_losses1) & (response_mask > 0)
 
-    cov_all = (advantages - verl_F.masked_mean(advantages, response_mask)) * (
-        log_prob - verl_F.masked_mean(log_prob.detach(), response_mask)
-    )
+    # Compute covariance: use IS-weighted advantages if enabled
+    if use_is_weighted_cov:
+        # Covariance between log_prob and (ratio * advantages)
+        weighted_adv = ratio.detach() * advantages
+        cov_all = (weighted_adv - verl_F.masked_mean(weighted_adv, response_mask)) * (
+            log_prob - verl_F.masked_mean(log_prob.detach(), response_mask)
+        )
+    else:
+        # Original: covariance between log_prob and advantages
+        cov_all = (advantages - verl_F.masked_mean(advantages, response_mask)) * (
+            log_prob - verl_F.masked_mean(log_prob.detach(), response_mask)
+        )
+    
     cov_all[response_mask == 0] = -torch.inf
     cov_all[clip_by_origin] = -torch.inf
 
@@ -1293,7 +1306,7 @@ def compute_policy_loss_kl_cov(
     rollout_is_weights: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """
-    Compute the clipped policy objective and related metrics for Clip-Cov.
+    Compute the clipped policy objective and related metrics for KL-Cov.
 
     Adapted from
     https://github.com/PRIME-RL/Entropy-Mechanism-of-RL/blob/main/verl/trainer/ppo/core_algos.py
@@ -1313,6 +1326,8 @@ def compute_policy_loss_kl_cov(
             Ratio for selecting the top-k covariance values. Defaults to 0.0002.
         ppo_kl_coef (float, optional):
             Coefficient for the KL penalty term in the loss. Defaults to 1.
+        use_is_weighted_cov (bool, optional):
+            If True, compute covariance using IS-weighted advantages (r(a) * A). Defaults to False.
     """
     assert config is not None
     assert not isinstance(config, AlgoConfig), "passing AlgoConfig not supported yet"
@@ -1320,6 +1335,7 @@ def compute_policy_loss_kl_cov(
 
     kl_cov_ratio = config.policy_loss.kl_cov_ratio if config.policy_loss.kl_cov_ratio is not None else 0.0002
     ppo_kl_coef = config.policy_loss.ppo_kl_coef if config.policy_loss.ppo_kl_coef is not None else 1.0
+    use_is_weighted_cov = getattr(config.policy_loss, "use_is_weighted_cov", False)
 
     assert kl_cov_ratio > 0, "kl_cov_ratio should be larger than 0."
 
@@ -1333,7 +1349,14 @@ def compute_policy_loss_kl_cov(
 
     all_valid = response_mask > 0
     all_valid_idx = torch.nonzero(all_valid.reshape(-1), as_tuple=True)[0]
-    all_valid_adv = advantages[all_valid].detach().reshape(-1).cpu()
+    
+    # Compute covariance: use IS-weighted advantages if enabled
+    if use_is_weighted_cov:
+        weighted_adv = (ratio * advantages)[all_valid].detach().reshape(-1).cpu()
+        all_valid_adv = weighted_adv
+    else:
+        all_valid_adv = advantages[all_valid].detach().reshape(-1).cpu()
+    
     all_valid_logp = log_prob[all_valid].detach().reshape(-1).cpu()
 
     k = min(kl_cov_ratio, len(all_valid_adv))
@@ -1375,6 +1398,7 @@ def compute_policy_loss_gspo_clip_cov(
     - Base weighting follows GSPO (sequence-level importance broadcast to tokens)
     - Covariance-based token dropping follows Clip-Cov
     - Aggregation is sequence-mean of token-mean as in GSPO
+    - If use_is_weighted_cov=True, computes covariance using (seq_importance_ratio * advantages)
     """
 
     assert config is not None
@@ -1389,6 +1413,7 @@ def compute_policy_loss_gspo_clip_cov(
     clip_cov_ratio = config.policy_loss.clip_cov_ratio if config.policy_loss.clip_cov_ratio is not None else 0.0002
     clip_cov_lb = config.policy_loss.clip_cov_lb if config.policy_loss.clip_cov_lb is not None else 1.0
     clip_cov_ub = getattr(config.policy_loss, "clip_cov_ub", 5.0)
+    use_is_weighted_cov = getattr(config.policy_loss, "use_is_weighted_cov", False)
 
     assert clip_cov_ratio > 0, "clip_cov_ratio should be larger than 0."
 
@@ -1409,10 +1434,19 @@ def compute_policy_loss_gspo_clip_cov(
     corr = torch.ones_like(advantages)
     clip_by_origin = (pg_losses2 > pg_losses1) & (response_mask > 0)
 
-    # Covariance over valid tokens; detach mean of log_prob for stability similar to Clip-Cov
-    cov_all = (advantages - verl_F.masked_mean(advantages, response_mask)) * (
-        log_prob - verl_F.masked_mean(log_prob.detach(), response_mask)
-    )
+    # Compute covariance: use IS-weighted advantages if enabled
+    if use_is_weighted_cov:
+        # Covariance between log_prob and (seq_importance_ratio * advantages)
+        weighted_adv = seq_importance_ratio.detach() * advantages
+        cov_all = (weighted_adv - verl_F.masked_mean(weighted_adv, response_mask)) * (
+            log_prob - verl_F.masked_mean(log_prob.detach(), response_mask)
+        )
+    else:
+        # Original: covariance between log_prob and advantages
+        cov_all = (advantages - verl_F.masked_mean(advantages, response_mask)) * (
+            log_prob - verl_F.masked_mean(log_prob.detach(), response_mask)
+        )
+    
     cov_all[response_mask == 0] = -torch.inf
     cov_all[clip_by_origin] = -torch.inf
 
@@ -1459,6 +1493,7 @@ def compute_policy_loss_gspo_kl_cov(
     - Base GSPO objective using sequence-level importance ratio (broadcast to tokens)
     - Apply KL-augmented loss selectively to top-covariance tokens
     - Aggregate with sequence-mean of token-mean
+    - If get_policy_loss_fn=True, computes covariance using (seq_importance_ratio * advantages)
     """
 
     assert config is not None
@@ -1468,6 +1503,7 @@ def compute_policy_loss_gspo_kl_cov(
     # KL-Cov parameters
     kl_cov_ratio = config.policy_loss.kl_cov_ratio if config.policy_loss.kl_cov_ratio is not None else 0.0002
     ppo_kl_coef = config.policy_loss.ppo_kl_coef if config.policy_loss.ppo_kl_coef is not None else 1.0
+    use_is_weighted_cov = getattr(config.policy_loss, "use_is_weighted_cov", False)
     assert kl_cov_ratio > 0, "kl_cov_ratio should be larger than 0."
 
     negative_approx_kl = log_prob - old_log_prob
@@ -1485,10 +1521,17 @@ def compute_policy_loss_gspo_kl_cov(
     pg_losses_kl = pg_losses1 + ppo_kl_coef * abs_kl
     pg_losses = pg_losses1
 
-    # Select top-covariance tokens to apply KL augmentation (same selection logic as kl_cov)
+    # Select top-covariance tokens to apply KL augmentation
     all_valid = response_mask > 0
     all_valid_idx = torch.nonzero(all_valid.reshape(-1), as_tuple=True)[0]
-    all_valid_adv = advantages[all_valid].detach().reshape(-1).cpu()
+    
+    # Compute covariance: use IS-weighted advantages if enabled
+    if use_is_weighted_cov:
+        weighted_adv = (seq_importance_ratio * advantages)[all_valid].detach().reshape(-1).cpu()
+        all_valid_adv = weighted_adv
+    else:
+        all_valid_adv = advantages[all_valid].detach().reshape(-1).cpu()
+    
     all_valid_logp = log_prob[all_valid].detach().reshape(-1).cpu()
 
     k = min(kl_cov_ratio, len(all_valid_adv))

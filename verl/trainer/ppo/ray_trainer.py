@@ -423,7 +423,7 @@ class RayPPOTrainer:
         except Exception as e:
             print(f"Warning: Could not set total_training_steps in config. Structure missing? Error: {e}")
 
-    def _dump_generations(self, inputs, outputs, gts, scores, reward_extra_infos_dict, dump_path, uids=None):
+    def _dump_generations(self, inputs, outputs, gts, scores, reward_extra_infos_dict, dump_path, uids=None, data_sources=None):
         """Dump rollout/validation samples as JSONL.
         
         For validation with n samples per prompt, all n samples are dumped with the same UID,
@@ -444,6 +444,10 @@ class RayPPOTrainer:
         # Include UIDs if provided (for grouping multiple samples per prompt)
         if uids is not None:
             base_data["uid"] = uids
+        
+        # Include data sources if provided
+        if data_sources is not None:
+            base_data["data_source"] = data_sources
 
         for k, v in reward_extra_infos_dict.items():
             if len(v) == n:
@@ -649,6 +653,9 @@ class RayPPOTrainer:
 
         self._maybe_log_val_generations(inputs=sample_inputs, outputs=sample_outputs, scores=sample_scores)
 
+        # Flatten data sources for dumping
+        data_sources = np.concatenate(data_source_lst, axis=0).tolist()
+
         # dump generations (all n samples per prompt with UIDs for grouping)
         val_data_dir = self.config.trainer.get("validation_data_dir", None)
         if val_data_dir:
@@ -660,12 +667,13 @@ class RayPPOTrainer:
                 reward_extra_infos_dict=reward_extra_infos_dict,
                 dump_path=val_data_dir,
                 uids=sample_uids,
+                data_sources=data_sources,
             )
 
         for key_info, lst in reward_extra_infos_dict.items():
             assert len(lst) == 0 or len(lst) == len(sample_scores), f"{key_info}: {len(lst)=}, {len(sample_scores)=}"
 
-        data_sources = np.concatenate(data_source_lst, axis=0)
+        data_sources = np.array(data_sources)
 
         data_src2var2metric2val = process_validation_metrics(data_sources, sample_uids, reward_extra_infos_dict)
         metric_dict = {}
