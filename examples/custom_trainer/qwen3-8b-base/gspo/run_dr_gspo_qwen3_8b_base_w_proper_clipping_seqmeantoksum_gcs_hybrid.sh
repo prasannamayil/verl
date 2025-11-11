@@ -110,7 +110,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.policy_loss.loss_mode=${loss_mode} \
     actor_rollout_ref.actor.loss_agg_mode=${loss_agg_mode} \
     data.train_files=/root/repos/verl/datasets/dapo_math_17k/dapo_non_matching_math_b_full.parquet \
-    data.val_files=[/root/repos/verl/datasets/aime_2024/test_nosuffix.parquet,/root/repos/verl/datasets/aime_2025/test_nosuffix.parquet,/root/repos/verl/datasets/math_b_exploration/qwen3_8bbase_unsolved_no_suffix.parquet] \
+    data.val_files=[/root/repos/verl/datasets/aime_2024/test_nosuffix.parquet,/root/repos/verl/datasets/aime_2025/test_nosuffix.parquet,/root/repos/verl/datasets/math-b/qwen3_8bbase_unsolved_no_suffix.parquet] \
     data.train_batch_size=${batch_size} \
     data.max_prompt_length=${prompt_length} \
     data.max_response_length=${response_length} \
