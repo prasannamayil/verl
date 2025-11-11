@@ -27,7 +27,7 @@ n_gpus=8
 nnodes=1
 
 # Model configuration for GSPO
-response_length=3072  # 8k tokens as per GSPO paper
+response_length=8192  # 8k tokens as per GSPO paper
 prompt_length=1024
 total_ctx=$((prompt_length + response_length))
 batch_size=1024
@@ -109,8 +109,8 @@ python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=${adv_estimator} \
     actor_rollout_ref.actor.policy_loss.loss_mode=${loss_mode} \
     actor_rollout_ref.actor.loss_agg_mode=${loss_agg_mode} \
-    data.train_files=/fast/pmayilvahanan/datasets/dapo_math_17k/dapo_non_matching_math_b_full.parquet \
-    data.val_files=[/fast/pmayilvahanan/datasets/aime_2024/test_nosuffix.parquet,/fast/pmayilvahanan/datasets/aime_2025/test_nosuffix.parquet,/fast/pmayilvahanan/datasets/math_b_exploration/qwen25math15_unsolved_no_suffix.parquet] \
+    data.train_files=/root/repos/verl/datasets/dapo_math_17k/dapo_non_matching_math_b_full.parquet \
+    data.val_files=[/root/repos/verl/datasets/aime_2024/test_nosuffix.parquet,/root/repos/verl/datasets/aime_2025/test_nosuffix.parquet,/root/repos/verl/datasets/math_b_exploration/qwen25math15_unsolved_no_suffix.parquet] \
     data.train_batch_size=${batch_size} \
     data.max_prompt_length=${prompt_length} \
     data.max_response_length=${response_length} \
