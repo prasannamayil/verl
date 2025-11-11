@@ -1,8 +1,8 @@
 #!/bin/bash
 set -x
 
-# Script to evaluate a single checkpoint with high pass@k
-# Usage: ./eval_single_checkpoint_highpass.sh [checkpoint_path] [high_pass_k]
+# Parameterized evaluation script for different sampling strategies
+# Usage: ./eval_checkpoint_parametric.sh [checkpoint_path] [sampling_type] [n_samples] [temperature] [top_p] [top_k] [suffix]
 
 # Environment setup
 export VLLM_ATTENTION_BACKEND=FLASH_ATTN
@@ -10,14 +10,21 @@ export VLLM_ATTENTION_BACKEND=FLASH_ATTN
 module load cuda/12.9
 source ~/.verl_102025/bin/activate
 
-# Get checkpoint path from command line
+# Get parameters from command line
 CHECKPOINT_PATH=${1}
-HIGH_PASS_K=${2:-1024}
+SAMPLING_TYPE=${2:-"high_entropy"}  # greedy, mid_entropy, high_entropy
+N_SAMPLES=${3:-1024}
+TEMPERATURE=${4:-1.0}
+TOP_P=${5:-1.0}
+TOP_K=${6:--1}
+SUFFIX=${7:-"${SAMPLING_TYPE}"}
 
 if [ -z "$CHECKPOINT_PATH" ]; then
     echo "Error: Checkpoint path required"
-    echo "Usage: $0 <checkpoint_path> [high_pass_k]"
-    echo "Example: $0 /fast/pmayilvahanan/verl_checkpoints/exploration/gspo_qwen25math_1.5b_dapo_5k_epochs20_rollouts8_bsz1024_resp_len1024/global_step_48 1024"
+    echo "Usage: $0 <checkpoint_path> [sampling_type] [n_samples] [temperature] [top_p] [top_k] [suffix]"
+    echo "Example: $0 /path/to/checkpoint greedy 1 0.0 1.0 -1 greedy"
+    echo "Example: $0 /path/to/checkpoint mid_entropy 1024 0.6 0.95 -1 mid_entropy"
+    echo "Example: $0 /path/to/checkpoint high_entropy 1024 1.0 1.0 -1 high_entropy"
     exit 1
 fi
 
@@ -31,12 +38,21 @@ fi
 PARENT_DIR=$(dirname "$CHECKPOINT_PATH")
 CHECKPOINT_NAME=$(basename "$CHECKPOINT_PATH")
 
-echo "Evaluating checkpoint: $CHECKPOINT_PATH"
-echo "High pass@k: $HIGH_PASS_K"
+echo "================================================================================"
+echo "Evaluation Configuration"
+echo "================================================================================"
+echo "Checkpoint: $CHECKPOINT_PATH"
+echo "Sampling Type: $SAMPLING_TYPE"
+echo "N Samples: $N_SAMPLES"
+echo "Temperature: $TEMPERATURE"
+echo "Top-p: $TOP_P"
+echo "Top-k: $TOP_K"
+echo "Suffix: $SUFFIX"
 echo "Results will be saved to: $PARENT_DIR"
+echo "================================================================================"
 
 # Model configuration (should match training)
-model_name=Qwen/Qwen2.5-Math-1.5B
+model_name=Qwen/Qwen2.5-Math-7B
 project_name=verl_exploration
 
 # Context configuration
@@ -44,9 +60,12 @@ response_length=3072
 prompt_length=1024
 total_ctx=$((prompt_length + response_length))
 
-# Validation batch size (smaller for high pass@k)
-# With 175 test examples, processing 4 at a time
-val_batch_size=8  # 8 for pass@1024, 16 for pass@512 (as we used 16 for 1024 in training)
+# Validation batch size - adjust based on n_samples
+if [ "$N_SAMPLES" -eq 1 ]; then
+    val_batch_size=16  # Greedy sampling can handle more at once
+else
+    val_batch_size=8   # High pass@k needs smaller batches
+fi
 
 # GPU and batch configuration
 ppo_mini_batch_size=512
@@ -55,17 +74,17 @@ log_prob_micro_batch_size_per_gpu=160
 n_gpus=8
 nnodes=1
 
-# GSPO-specific configuration (must match training)
+# GRPO-specific configuration (must match training)
 adv_estimator=grpo
-loss_mode=gspo
+loss_mode=grpo
 loss_agg_mode="seq-mean-token-mean"
 learning_rate=1e-6
 
-# GSPO clipping parameters
+# GRPO clipping parameters
 clip_ratio_low=0.0003
 clip_ratio_high=0.0004
 
-# No KL for GSPO
+# No KL for GRPO
 use_kl_in_reward=false
 kl_coef=0.0
 use_kl_loss=false
@@ -83,6 +102,13 @@ experiment_name=$(basename "$PARENT_DIR")
 # Ensure results directory exists
 results_dir=results
 mkdir -p ${results_dir}
+
+# Set do_sample based on sampling type
+if [ "$SAMPLING_TYPE" = "greedy" ]; then
+    do_sample=False
+else
+    do_sample=True
+fi
 
 # Track evaluation time
 eval_start_time=$(date +%s)
@@ -112,12 +138,12 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \
     actor_rollout_ref.rollout.max_model_len=${total_ctx} \
     actor_rollout_ref.rollout.max_num_batched_tokens=${total_ctx} \
-    actor_rollout_ref.rollout.n=${HIGH_PASS_K} \
-    actor_rollout_ref.rollout.temperature=1.0 \
-    actor_rollout_ref.rollout.top_p=1.0 \
-    actor_rollout_ref.rollout.top_k=-1 \
+    actor_rollout_ref.rollout.n=${N_SAMPLES} \
+    actor_rollout_ref.rollout.temperature=${TEMPERATURE} \
+    actor_rollout_ref.rollout.top_p=${TOP_P} \
+    actor_rollout_ref.rollout.top_k=${TOP_K} \
     actor_rollout_ref.rollout.enable_chunked_prefill=True \
-    actor_rollout_ref.rollout.val_kwargs.do_sample=True \
+    actor_rollout_ref.rollout.val_kwargs.do_sample=${do_sample} \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=${log_prob_micro_batch_size_per_gpu} \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     data.train_files=${train_file} \
@@ -137,7 +163,8 @@ python3 -m verl.trainer.main_ppo \
     trainer.resume_from_path=${CHECKPOINT_PATH} \
     trainer.val_only=True \
     trainer.val_before_train=True \
-    +trainer.eval_filename=evals_high_pass.jsonl \
+    +trainer.eval_filename=evals_${SUFFIX}.jsonl \
+    +trainer.validation_data_dirname=validation_data_${SUFFIX} \
     reward_model.reward_manager=dapo
 
 # Calculate evaluation time
@@ -151,10 +178,11 @@ echo "==========================================================================
 echo "Evaluation complete!"
 echo "================================================================================"
 echo "Checkpoint: ${CHECKPOINT_NAME}"
-echo "Pass@k: ${HIGH_PASS_K}"
+echo "Sampling: ${SAMPLING_TYPE} (n=${N_SAMPLES}, temp=${TEMPERATURE}, top_p=${TOP_P}, top_k=${TOP_K})"
 echo "Evaluation time: ${eval_minutes}m ${eval_seconds}s"
 echo "-------------------------------------------------------------------------------"
-echo "Results saved to: $PARENT_DIR/evals_high_pass.jsonl"
-echo "Results copy saved to: ${results_dir}/${experiment_name}_evals_high_pass.jsonl"
-echo "Traces saved to: $PARENT_DIR/validation_data_high_pass/${CHECKPOINT_NAME}.jsonl"
+echo "Results saved to: $PARENT_DIR/evals_${SUFFIX}.jsonl"
+echo "Results copy saved to: ${results_dir}/${experiment_name}_evals_${SUFFIX}.jsonl"
+echo "Traces saved to: $PARENT_DIR/validation_data_${SUFFIX}/${CHECKPOINT_NAME}.jsonl"
 echo "================================================================================"
+
