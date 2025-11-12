@@ -27,13 +27,13 @@ n_gpus=8
 nnodes=1
 
 # Model configuration for GSPO
-response_length=8192  # 8k tokens as per GSPO paper
+response_length=7168  # 8k tokens as per GSPO paper
 prompt_length=1024
 total_ctx=$((prompt_length + response_length))
-batch_size=1024
-ppo_mini_batch_size=512  
-ppo_micro_batch_size_per_gpu=8 # 16 failed
-log_prob_micro_batch_size_per_gpu=64
+batch_size=1280  # Increased from 1024 (25% increase for better GPU utilization)
+ppo_mini_batch_size=640  # Increased proportionally from 512
+ppo_micro_batch_size_per_gpu=10 # Increased from 8 for better GPU utilization
+log_prob_micro_batch_size_per_gpu=80  # Increased from 64
 
 # GSPO-specific configuration
 adv_estimator=grpo
@@ -43,8 +43,10 @@ loss_agg_mode="seq-mean-token-sum"
 learning_rate=1e-6
 
 # GSPO clipping parameters
-clip_ratio_low=0.0003  
-clip_ratio_high=0.0006 
+# clip_ratio_low=0.0003  # Original tight clipping
+# clip_ratio_high=0.0006 # Original tight clipping
+clip_ratio_low=1.0  # No clipping (matching Qwen2.5-Math-7B setup)
+clip_ratio_high=1.0 # No clipping (matching Qwen2.5-Math-7B setup) 
 # Dr. GRPO / Dr. GSPO parameters
 norm_adv_by_std_in_grpo=false
 
@@ -130,7 +132,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=${log_prob_micro_batch_size_per_gpu} \
     actor_rollout_ref.rollout.tensor_model_parallel_size=2 \
     actor_rollout_ref.rollout.name=vllm \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.85 \
     actor_rollout_ref.rollout.max_model_len=${total_ctx} \
     actor_rollout_ref.rollout.max_num_batched_tokens=${total_ctx} \
     actor_rollout_ref.rollout.n=${rollouts} \

@@ -22,11 +22,38 @@ import pprint
 
 import torch
 
+try:
+    import numpy as np
+except Exception:
+    np = None
+
+
+def _convert_to_python_type(v):
+    """Convert numpy scalars and torch tensors to Python types for clean display."""
+    # Handle numpy scalars
+    if np is not None and isinstance(v, np.generic):
+        try:
+            return v.item()
+        except Exception:
+            return float(v)
+    
+    # Handle torch tensors
+    if isinstance(v, torch.Tensor):
+        if v.numel() == 1:
+            try:
+                return v.item()
+            except Exception:
+                return float(v.detach().cpu().reshape(()))
+    
+    return v
+
 
 def concat_dict_to_str(dict: dict, step):
     output = [f"step:{step}"]
     for k, v in dict.items():
         if isinstance(v, numbers.Number):
+            # Convert numpy/torch types to Python types for clean display
+            v = _convert_to_python_type(v)
             output.append(f"{k}:{pprint.pformat(v)}")
     output_str = " - ".join(output)
     return output_str
