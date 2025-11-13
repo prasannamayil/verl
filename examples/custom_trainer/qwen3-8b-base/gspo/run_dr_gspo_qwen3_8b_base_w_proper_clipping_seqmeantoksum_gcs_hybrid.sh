@@ -13,7 +13,7 @@ set -x
 
 # Environment setup
 export VLLM_ATTENTION_BACKEND=FLASH_ATTN
-export TORCH_SYMM_MEM_ALLOW_OVERLAPPING_DEVICES
+export TORCH_SYMM_MEM_ALLOW_OVERLAPPING_DEVICES=1
 
 #module load cuda/12.9
 source ~/.verl_102025/bin/activate
@@ -46,8 +46,9 @@ learning_rate=1e-6
 # GSPO clipping parameters
 # clip_ratio_low=0.0003  # Original tight clipping
 # clip_ratio_high=0.0006 # Original tight clipping
-clip_ratio_low=1.0  # No clipping (matching Qwen2.5-Math-7B setup)
-clip_ratio_high=1.0 # No clipping (matching Qwen2.5-Math-7B setup) 
+clip_ratio_low=0.0003  # as recommended by the paper
+clip_ratio_high=0.0004 # as recommended by the paper
+
 # Dr. GRPO / Dr. GSPO parameters
 norm_adv_by_std_in_grpo=false
 
