@@ -13,6 +13,7 @@ set -x
 
 # Environment setup
 export VLLM_ATTENTION_BACKEND=FLASH_ATTN
+export TORCH_SYMM_MEM_ALLOW_OVERLAPPING_DEVICES
 
 #module load cuda/12.9
 source ~/.verl_102025/bin/activate
@@ -30,10 +31,10 @@ nnodes=1
 response_length=7168  # 8k tokens as per GSPO paper
 prompt_length=1024
 total_ctx=$((prompt_length + response_length))
-batch_size=1280  # Increased from 1024 (25% increase for better GPU utilization)
-ppo_mini_batch_size=640  # Increased proportionally from 512
-ppo_micro_batch_size_per_gpu=10 # Increased from 8 for better GPU utilization
-log_prob_micro_batch_size_per_gpu=80  # Increased from 64
+batch_size=1024  # Increased from 1024 (25% increase for better GPU utilization)
+ppo_mini_batch_size=512  # Increased proportionally from 512
+ppo_micro_batch_size_per_gpu=8 # Increased from 8 for better GPU utilization
+log_prob_micro_batch_size_per_gpu=64  # Increased from 64
 
 # GSPO-specific configuration
 adv_estimator=grpo
