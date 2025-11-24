@@ -2,8 +2,8 @@
 set -Eeuo pipefail
 set -x
 
-# Parameterized evaluation script for different sampling strategies
-# Usage: ./eval_checkpoint_parametric.sh [checkpoint_path] [sampling_type] [n_samples] [temperature] [top_p] [top_k] [suffix]
+# Parameterized base model evaluation script for different sampling strategies
+# Usage: ./eval_base_model_parametric.sh [model_path] [sampling_type] [n_samples] [temperature] [top_p] [top_k] [suffix]
 
 # Environment setup
 export VLLM_ATTENTION_BACKEND=FLASH_ATTN
@@ -15,40 +15,44 @@ source ~/.verl_102025/bin/activate
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 # Get parameters from command line
-CHECKPOINT_PATH=${1}
+MODEL_PATH=${1}
 SAMPLING_TYPE=${2:-"high_entropy"}  # greedy, mid_entropy, high_entropy
 N_SAMPLES=${3:-1024}
 TEMPERATURE=${4:-1.0}
 TOP_P=${5:-1.0}
 TOP_K=${6:--1}
 SUFFIX=${7:-"${SAMPLING_TYPE}"}
+RUN_ID=${8:-""}  # Optional run identifier (e.g., "run1", "seed42")
 
-# Normalize checkpoint path (strip trailing slash to avoid parsing issues)
-CHECKPOINT_PATH="${CHECKPOINT_PATH%/}"
-
-if [ -z "$CHECKPOINT_PATH" ]; then
-    echo "Error: Checkpoint path required"
-    echo "Usage: $0 <checkpoint_path> [sampling_type] [n_samples] [temperature] [top_p] [top_k] [suffix]"
-    echo "Example: $0 /path/to/checkpoint greedy 1 0.0 1.0 -1 greedy"
-    echo "Example: $0 /path/to/checkpoint mid_entropy 1024 0.6 0.95 -1 mid_entropy"
-    echo "Example: $0 /path/to/checkpoint high_entropy 1024 1.0 1.0 -1 high_entropy"
+if [ -z "$MODEL_PATH" ]; then
+    echo "Error: Model path required"
+    echo "Usage: $0 <model_path> [sampling_type] [n_samples] [temperature] [top_p] [top_k] [suffix]"
+    echo "Example: $0 Qwen/Qwen2.5-Math-7B greedy 1 0.0 1.0 -1 greedy"
+    echo "Example: $0 Qwen/Qwen2.5-Math-7B mid_entropy 1024 0.6 0.95 -1 mid_entropy"
+    echo "Example: $0 Qwen/Qwen2.5-Math-7B high_entropy 1024 1.0 1.0 -1 high_entropy"
     exit 1
 fi
 
-# Verify checkpoint directory exists
-if [ ! -d "$CHECKPOINT_PATH" ]; then
-    echo "Error: Checkpoint path does not exist: $CHECKPOINT_PATH"
-    exit 1
+# Extract a clean name for the model (e.g., "Qwen2.5-Math-7B" from "Qwen/Qwen2.5-Math-7B")
+model_basename=$(basename "$MODEL_PATH")
+model_clean_name=$(echo "$model_basename" | tr '/' '_' | tr '.' '_')
+
+# Create output directory structure similar to checkpoints
+# Format: base_models/<model_name>_base[_runid]/
+BASE_MODELS_DIR="/scratch/pmayilvahanan/verl_checkpoints/base_models"
+if [ -n "$RUN_ID" ]; then
+    PARENT_DIR="${BASE_MODELS_DIR}/${model_clean_name}_base_${RUN_ID}"
+    experiment_name_suffix="_${RUN_ID}"
+else
+    PARENT_DIR="${BASE_MODELS_DIR}/${model_clean_name}_base"
+    experiment_name_suffix=""
 fi
-
-# Extract parent directory for saving results
-PARENT_DIR=$(dirname "$CHECKPOINT_PATH")
-CHECKPOINT_NAME=$(basename "$CHECKPOINT_PATH")
+mkdir -p "${PARENT_DIR}"
 
 echo "================================================================================"
-echo "Evaluation Configuration"
+echo "Base Model Evaluation Configuration"
 echo "================================================================================"
-echo "Checkpoint: $CHECKPOINT_PATH"
+echo "Model: $MODEL_PATH"
 echo "Sampling Type: $SAMPLING_TYPE"
 echo "N Samples: $N_SAMPLES"
 echo "Temperature: $TEMPERATURE"
@@ -58,9 +62,9 @@ echo "Suffix: $SUFFIX"
 echo "Results will be saved to: $PARENT_DIR"
 echo "================================================================================"
 
-# Model configuration (should match training)
-model_name=Qwen/Qwen2.5-Math-7B
+# Project configuration
 project_name=verl_exploration
+experiment_name="${model_clean_name}_base${experiment_name_suffix}"
 
 # Context configuration
 response_length=3072
@@ -81,7 +85,7 @@ log_prob_micro_batch_size_per_gpu=160
 n_gpus=8
 nnodes=1
 
-# GRPO-specific configuration (must match training)
+# GRPO-specific configuration (for config compatibility)
 adv_estimator=grpo
 loss_mode=grpo
 loss_agg_mode="seq-mean-token-mean"
@@ -103,18 +107,10 @@ train_file=/fast/pmayilvahanan/datasets/dapo_math_17k/dapo_non_matching_math_b_5
 # Evaluation datasets
 val_files="[/fast/pmayilvahanan/datasets/aime_2024/test_nosuffix.parquet,/fast/pmayilvahanan/datasets/aime_2025/test_nosuffix.parquet,/fast/pmayilvahanan/datasets/math_b_exploration/qwen25math15_unsolved_no_suffix.parquet]"
 
-# Extract experiment name from parent directory
-experiment_name=$(basename "$PARENT_DIR")
-
 # Ensure results directory exists
 # Anchor repo-level results to repo root (examples/custom_trainer/..)
 results_dir="${SCRIPT_DIR}/../results"
 mkdir -p "${results_dir}"
-
-# Compute hashed experiment subdir to avoid long filenames
-safe_hash=$(echo -n "$experiment_name" | sha1sum | awk '{print substr($1,1,12)}')
-repo_eval_dir="${results_dir}/exp_${safe_hash}"
-mkdir -p "${repo_eval_dir}"
 
 # Set do_sample based on sampling type
 if [ "$SAMPLING_TYPE" = "greedy" ]; then
@@ -126,7 +122,7 @@ fi
 # Track evaluation time
 eval_start_time=$(date +%s)
 
-# Run evaluation
+# Run evaluation (NO checkpoint loading - just base model)
 python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=${adv_estimator} \
     algorithm.use_kl_in_reward=${use_kl_in_reward} \
@@ -142,7 +138,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.clip_ratio_high=${clip_ratio_high} \
     actor_rollout_ref.actor.fsdp_config.param_offload=False \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
-    actor_rollout_ref.model.path=${model_name} \
+    actor_rollout_ref.model.path=${MODEL_PATH} \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=${log_prob_micro_batch_size_per_gpu} \
@@ -172,8 +168,7 @@ python3 -m verl.trainer.main_ppo \
     trainer.n_gpus_per_node=${n_gpus} \
     trainer.nnodes=${nnodes} \
     trainer.default_local_dir=${PARENT_DIR} \
-    trainer.resume_mode=resume_path \
-    trainer.resume_from_path=${CHECKPOINT_PATH} \
+    trainer.resume_mode=disable \
     trainer.val_only=True \
     trainer.val_before_train=True \
     +trainer.eval_filename=evals_${SUFFIX}.jsonl \
@@ -186,16 +181,16 @@ eval_duration=$((eval_end_time - eval_start_time))
 eval_minutes=$((eval_duration / 60))
 eval_seconds=$((eval_duration % 60))
 
-# Verify outputs actually contain this checkpoint step
-CHECKPOINT_STEP="${CHECKPOINT_NAME#global_step_}"
+# Verify outputs exist and contain results
+# For base model, we use step 0 as the identifier
 primary_eval_file="$PARENT_DIR/evals_${SUFFIX}.jsonl"
-repo_eval_file="${repo_eval_dir}/evals_${SUFFIX}.jsonl"
-trace_file="$PARENT_DIR/validation_data_${SUFFIX}/${CHECKPOINT_NAME}.jsonl"
+repo_eval_file="${results_dir}/${experiment_name}_evals_${SUFFIX}.jsonl"
+trace_dir="$PARENT_DIR/validation_data_${SUFFIX}"
 
-# Helper: check if a jsonl contains this step id
+# Helper: check if a jsonl contains step 0 entry
 has_step_entry() {
     local f="$1"
-    [ -s "$f" ] && grep -q "\"log_step\"[[:space:]]*:[[:space:]]*${CHECKPOINT_STEP}\b" "$f"
+    [ -s "$f" ] && grep -q "\"log_step\"[[:space:]]*:[[:space:]]*0\b" "$f"
 }
 
 primary_ok=false
@@ -208,30 +203,30 @@ fi
 if has_step_entry "$repo_eval_file"; then
     repo_ok=true
 fi
-if [ -s "$trace_file" ]; then
+if [ -d "$trace_dir" ] && [ -n "$(ls -A "$trace_dir" 2>/dev/null)" ]; then
     trace_ok=true
 fi
 
 if { [ "$primary_ok" = true ] || [ "$repo_ok" = true ]; } && [ "$trace_ok" = true ]; then
     echo ""
     echo "================================================================================"
-    echo "Evaluation complete!"
+    echo "Base model evaluation complete!"
     echo "================================================================================"
-    echo "Checkpoint: ${CHECKPOINT_NAME}"
+    echo "Model: ${MODEL_PATH}"
     echo "Sampling: ${SAMPLING_TYPE} (n=${N_SAMPLES}, temp=${TEMPERATURE}, top_p=${TOP_P}, top_k=${TOP_K})"
     echo "Evaluation time: ${eval_minutes}m ${eval_seconds}s"
     echo "-------------------------------------------------------------------------------"
     echo "Results saved to: $primary_eval_file"
-    echo "Results copy saved to: $repo_eval_file (experiment: ${experiment_name})"
-    echo "Traces saved to: $trace_file"
+    echo "Results copy saved to: $repo_eval_file"
+    echo "Traces saved to: $trace_dir"
     echo "================================================================================"
 else
     echo ""
-    echo "ERROR: Evaluation did not produce valid outputs for step ${CHECKPOINT_STEP}."
+    echo "ERROR: Evaluation did not produce valid outputs."
     echo "       Checked:"
     echo "         - primary eval: $primary_eval_file (found_step=$primary_ok)"
     echo "         - repo eval:    $repo_eval_file (found_step=$repo_ok)"
-    echo "         - trace file:   $trace_file (exists_nonempty=$trace_ok)"
+    echo "         - trace dir:    $trace_dir (exists_nonempty=$trace_ok)"
     exit 1
 fi
 

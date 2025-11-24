@@ -51,17 +51,51 @@ echo "Total checkpoints: $total_checkpoints"
 echo "Sampling type: $SAMPLING_TYPE"
 echo "================================================================================"
 echo ""
+if [ "$SAMPLING_TYPE" = "all" ]; then
+    echo "Resume mode: enabled (skips sampling types already completed for a checkpoint)"
+fi
+
+# Helper to check if a checkpoint already has results for a given suffix
+is_completed_for_suffix() {
+    local checkpoint_path="$1"
+    local suffix="$2"
+    local checkpoint_name="$(basename "$checkpoint_path")"
+    local parent_dir="$(dirname "$checkpoint_path")"
+    local step="${checkpoint_name#global_step_}"
+    local experiment_name="$(basename "$parent_dir")"
+    local primary_file="${parent_dir}/evals_${suffix}.jsonl"
+    local safe_hash
+    safe_hash=$(echo -n "$experiment_name" | sha1sum | awk '{print substr($1,1,12)}')
+    local repo_file="${SCRIPT_DIR}/../results/exp_${safe_hash}/evals_${suffix}.jsonl"
+    local trace_file="${parent_dir}/validation_data_${suffix}/${checkpoint_name}.jsonl"
+    # Require a non-empty trace file to consider completion
+    if [ ! -s "$trace_file" ]; then
+        return 1
+    fi
+    if [ -s "$primary_file" ] && grep -q "\"log_step\"[[:space:]]*:[[:space:]]*${step}\\b" "$primary_file"; then
+        return 0
+    fi
+    if [ -s "$repo_file" ] && grep -q "\"log_step\"[[:space:]]*:[[:space:]]*${step}\\b" "$repo_file"; then
+        return 0
+    fi
+    return 1
+}
 
 # Track overall progress
 checkpoint_num=0
 failed_checkpoints=()
 batch_start_time=$(date +%s)
 
-# Read checkpoint list and evaluate each
-while IFS= read -r checkpoint_path; do
+# Read checkpoint list robustly (handles missing trailing newline)
+while IFS= read -r checkpoint_path || [[ -n "$checkpoint_path" ]]; do
     # Skip empty lines and comments
     [[ -z "$checkpoint_path" ]] && continue
     [[ "$checkpoint_path" =~ ^[[:space:]]*# ]] && continue
+    # Sanitize: strip CRs and trailing slashes/spaces
+    checkpoint_path="${checkpoint_path//$'\r'/}"
+    checkpoint_path="${checkpoint_path%/}"
+    # Trim trailing spaces
+    checkpoint_path="$(printf "%s" "$checkpoint_path" | sed 's/[[:space:]]*$//')"
     
     checkpoint_num=$((checkpoint_num + 1))
     
@@ -104,27 +138,39 @@ while IFS= read -r checkpoint_path; do
             fi
             ;;
         all)
-            echo "Running all sampling strategies..."
+            echo "Running all sampling strategies (with resume)..."
             
             echo ""
             echo "--- Greedy Sampling ---"
-            if ! ${SCRIPT_DIR}/eval_checkpoint_greedy.sh "$checkpoint_path"; then
-                echo "ERROR: Greedy evaluation failed for $checkpoint_path"
-                failed_checkpoints+=("$checkpoint_path (greedy failed)")
+            if is_completed_for_suffix "$checkpoint_path" "greedy"; then
+                echo "SKIP: Greedy already completed for $checkpoint_path"
+            else
+                if ! ${SCRIPT_DIR}/eval_checkpoint_greedy.sh "$checkpoint_path"; then
+                    echo "ERROR: Greedy evaluation failed for $checkpoint_path"
+                    failed_checkpoints+=("$checkpoint_path (greedy failed)")
+                fi
             fi
             
             echo ""
             echo "--- Mid-Entropy Sampling ---"
-            if ! ${SCRIPT_DIR}/eval_checkpoint_mid_entropy.sh "$checkpoint_path"; then
-                echo "ERROR: Mid-entropy evaluation failed for $checkpoint_path"
-                failed_checkpoints+=("$checkpoint_path (mid_entropy failed)")
+            if is_completed_for_suffix "$checkpoint_path" "mid_entropy"; then
+                echo "SKIP: Mid-entropy already completed for $checkpoint_path"
+            else
+                if ! ${SCRIPT_DIR}/eval_checkpoint_mid_entropy.sh "$checkpoint_path"; then
+                    echo "ERROR: Mid-entropy evaluation failed for $checkpoint_path"
+                    failed_checkpoints+=("$checkpoint_path (mid_entropy failed)")
+                fi
             fi
             
             echo ""
             echo "--- High-Entropy Sampling ---"
-            if ! ${SCRIPT_DIR}/eval_checkpoint_high_entropy.sh "$checkpoint_path"; then
-                echo "ERROR: High-entropy evaluation failed for $checkpoint_path"
-                failed_checkpoints+=("$checkpoint_path (high_entropy failed)")
+            if is_completed_for_suffix "$checkpoint_path" "high_entropy"; then
+                echo "SKIP: High-entropy already completed for $checkpoint_path"
+            else
+                if ! ${SCRIPT_DIR}/eval_checkpoint_high_entropy.sh "$checkpoint_path"; then
+                    echo "ERROR: High-entropy evaluation failed for $checkpoint_path"
+                    failed_checkpoints+=("$checkpoint_path (high_entropy failed)")
+                fi
             fi
             ;;
         *)

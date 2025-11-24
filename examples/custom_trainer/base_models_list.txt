@@ -1,0 +1,12 @@
+# Example base model list file for batch evaluation
+# Lines starting with # are treated as comments
+# Put one model path per line (HuggingFace model IDs or local paths)
+
+# Example format:
+# Qwen/Qwen2.5-Math-7B
+# Qwen/Qwen2.5-Math-1.5B
+# meta-llama/Llama-3.1-8B
+
+# Add your model paths below (uncomment and modify):
+Qwen/Qwen2.5-Math-7B
+
